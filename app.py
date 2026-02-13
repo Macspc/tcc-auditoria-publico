@@ -37,8 +37,9 @@ else:
 def get_vectorstore():
     """Conecta ao Pinecone e retorna o banco vetorial"""
     # IMPORTANTE: O modelo de embedding deve ser o mesmo usado na criação do índice (768 dimensões)
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    #  embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     #  embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     index_name = "tcc-auditoria"  # O nome exato que você criou no Pinecone
     
     vectorstore = PineconeVectorStore(
@@ -158,5 +159,6 @@ if prompt := st.chat_input("Digite sua pergunta..."):
     
 
     st.session_state.messages.append({"role": "assistant", "content": resposta})
+
 
 
