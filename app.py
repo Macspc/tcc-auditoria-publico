@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import time
 import tempfile
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_pinecone import PineconeVectorStore
@@ -48,27 +49,52 @@ def get_vectorstore():
     return vectorstore
 
 def process_pdf(uploaded_file):
-    """Lê o PDF, quebra em pedaços e salva no Pinecone"""
+    """Lê o PDF, quebra em pedaços e salva no Pinecone com Rate Limiting"""
     try:
+        # 1. Salva arquivo temporário
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.read())
             tmp_file_path = tmp_file.name
 
+        # 2. Carrega e Divide
         loader = PyPDFLoader(tmp_file_path)
         docs = loader.load()
 
-        # Quebra o texto em pedaços de 1000 caracteres
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200
         )
         splits = text_splitter.split_documents(docs)
 
+        # 3. Inserção em Lotes (Batching) para não estourar o limite
         vectorstore = get_vectorstore()
-        vectorstore.add_documents(splits)
         
+        # Configuração do Rate Limit (Plano Free)
+        batch_size = 5  # Envia apenas 5 pedaços por vez
+        total_chunks = len(splits)
+        
+        # Barra de Progresso no Streamlit
+        progress_bar = st.progress(0, text="Iniciando processamento...")
+        
+        for i in range(0, total_chunks, batch_size):
+            # Pega um lote de 5
+            batch = splits[i : i + batch_size]
+            
+            # Envia para o Google/Pinecone
+            vectorstore.add_documents(batch)
+            
+            # Atualiza barra
+            progresso = min((i + batch_size) / total_chunks, 1.0)
+            progress_bar.progress(progresso, text=f"Processando parte {i+1} de {total_chunks}...")
+            
+            # PAUSA ESTRATÉGICA (O Segredo do Sucesso)
+            # Espera 2 segundos entre cada lote para o Google respirar
+            time.sleep(2) 
+
         os.remove(tmp_file_path)
-        return True, f"Sucesso! {len(splits)} trechos processados e indexados."
+        progress_bar.empty() # Remove a barra quando acabar
+        return True, f"Sucesso! {total_chunks} trechos indexados."
+
     except Exception as e:
         return False, str(e)
 
@@ -153,4 +179,5 @@ if prompt := st.chat_input("Digite sua pergunta..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao gerar resposta: {e}")
+
 
