@@ -100,7 +100,7 @@ def process_pdf(uploaded_file):
 
 def get_resposta(pergunta, perfil):
     """Gera a resposta usando Google Gemini"""
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-Pro", temperature=0.3)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
     vectorstore = get_vectorstore()
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
@@ -179,5 +179,6 @@ if prompt := st.chat_input("Digite sua pergunta..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao gerar resposta: {e}")
+
 
 
