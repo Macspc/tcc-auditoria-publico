@@ -49,51 +49,64 @@ def get_vectorstore():
     return vectorstore
 
 def process_pdf(uploaded_file):
-    """Lê o PDF, quebra em pedaços e salva no Pinecone com Rate Limiting"""
+    """Processa PDF com sistema Anti-Erro 429 (Backoff Exponencial)"""
     try:
-        # 1. Salva arquivo temporário
+        # 1. Cria arquivo temporário
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.read())
             tmp_file_path = tmp_file.name
 
-        # 2. Carrega e Divide
+        # 2. Carrega
         loader = PyPDFLoader(tmp_file_path)
         docs = loader.load()
 
+        # 3. Divide (Chunks)
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200
         )
         splits = text_splitter.split_documents(docs)
+        
+        total_chunks = len(splits)
+        st.write(f"📄 O documento gerou {total_chunks} partes. Iniciando envio lento...")
 
-        # 3. Inserção em Lotes (Batching) para não estourar o limite
         vectorstore = get_vectorstore()
         
-        # Configuração do Rate Limit (Plano Free)
-        batch_size = 5  # Envia apenas 5 pedaços por vez
-        total_chunks = len(splits)
-        
-        # Barra de Progresso no Streamlit
+        # --- ESTRATÉGIA DE ENVIO SEGURO ---
+        batch_size = 5  # Envia de 5 em 5 partes
         progress_bar = st.progress(0, text="Iniciando processamento...")
-        
+
         for i in range(0, total_chunks, batch_size):
-            # Pega um lote de 5
             batch = splits[i : i + batch_size]
             
-            # Envia para o Google/Pinecone
-            vectorstore.add_documents(batch)
+            # Tenta enviar o lote até 3 vezes se der erro
+            sucesso_lote = False
+            tentativas = 0
             
-            # Atualiza barra
+            while not sucesso_lote and tentativas < 3:
+                try:
+                    vectorstore.add_documents(batch)
+                    sucesso_lote = True # Passou!
+                except Exception as e:
+                    erro_msg = str(e)
+                    if "429" in erro_msg: # Se for erro de cota
+                        tentativas += 1
+                        tempo_espera = 20 * tentativas # Espera 20s, depois 40s...
+                        st.warning(f"⏳ O Google pediu uma pausa (Erro 429). Esperando {tempo_espera}s...")
+                        time.sleep(tempo_espera)
+                    else:
+                        raise e # Se for outro erro, para tudo
+
+            # Atualiza barra de progresso
             progresso = min((i + batch_size) / total_chunks, 1.0)
-            progress_bar.progress(progresso, text=f"Processando parte {i+1} de {total_chunks}...")
+            progress_bar.progress(progresso, text=f"Processando parte {min(i+batch_size, total_chunks)} de {total_chunks}...")
             
-            # PAUSA ESTRATÉGICA (O Segredo do Sucesso)
-            # Espera 2 segundos entre cada lote para o Google respirar
+            # Pausa padrão entre lotes para evitar o bloqueio
             time.sleep(2) 
 
         os.remove(tmp_file_path)
-        progress_bar.empty() # Remove a barra quando acabar
-        return True, f"Sucesso! {total_chunks} trechos indexados."
+        progress_bar.empty()
+        return True, f"Sucesso Absoluto! {total_chunks} partes indexadas."
 
     except Exception as e:
         return False, str(e)
@@ -179,6 +192,7 @@ if prompt := st.chat_input("Digite sua pergunta..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao gerar resposta: {e}")
+
 
 
 
