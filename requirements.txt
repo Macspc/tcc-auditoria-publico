@@ -1,8 +1,10 @@
 streamlit
 langchain
-langchain-google-genai
 langchain-community
+langchain-core
+langchain-google-genai
 langchain-pinecone
+langchain-text-splitters
 pinecone-client
 python-dotenv
 pypdf
