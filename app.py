@@ -3,7 +3,7 @@ import os
 import tempfile
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_pinecone import PineconeVectorStore
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -154,4 +154,5 @@ if prompt := st.chat_input("Digite sua pergunta..."):
             resposta = get_resposta(prompt, modo)
             st.markdown(resposta)
     
+
     st.session_state.messages.append({"role": "assistant", "content": resposta})
