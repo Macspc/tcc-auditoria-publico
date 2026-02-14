@@ -112,27 +112,31 @@ def process_pdf(uploaded_file):
         return False, str(e)
 
 def get_resposta(pergunta, perfil):
-    """Gera a resposta usando Google Gemini"""
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+    """Versão de Depuração - Mostra o que achou no banco"""
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
     vectorstore = get_vectorstore()
+    
+    # Busca os 5 trechos mais parecidos
+    docs = vectorstore.similarity_search(pergunta, k=5)
+    
+    # --- DEBUG: MOSTRA NA TELA O QUE ACHOU (Só para teste) ---
+    with st.expander("🕵️ O que a IA encontrou no banco de dados?"):
+        if not docs:
+            st.warning("⚠️ Nada encontrado! O Pinecone não retornou nenhum trecho.")
+        for i, doc in enumerate(docs):
+            st.write(f"**Trecho {i+1}:** {doc.page_content[:200]}...") # Mostra os primeiros 200 caracteres
+    # ---------------------------------------------------------
+
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
     if perfil == "server":
         system_prompt = (
-            "Você é um Auditor Assistente especializado em legislação municipal. "
-            "Responda à pergunta do funcionário público baseando-se EXCLUSIVAMENTE no contexto fornecido. "
-            "Cite o nome da Lei, o Artigo e o Parágrafo sempre que possível. "
-            "Se a informação não estiver no contexto, afirme que não consta na base de dados. "
-            "Contexto Legal:\n{context}"
-        )
-    else: # Perfil Cidadão
-        system_prompt = (
-            "Você é um Assistente Virtual da Prefeitura. "
-            "Explique a resposta de forma simples para um cidadão leigo. "
-            "Evite termos jurídicos complexos. "
-            "Use o contexto abaixo como base. "
+            "Você é um Auditor Assistente. Use o contexto abaixo para responder. "
+            "Se a resposta estiver no contexto, responda. Se não, diga 'Não encontrei no documento'."
             "Contexto:\n{context}"
         )
+    else:
+        system_prompt = "Responda com base no contexto:\n{context}"
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
@@ -144,7 +148,6 @@ def get_resposta(pergunta, perfil):
 
     response = rag_chain.invoke({"input": pergunta})
     return response["answer"]
-
 # --- INTERFACE (FRONTEND) ---
 
 query_params = st.query_params
@@ -192,6 +195,7 @@ if prompt := st.chat_input("Digite sua pergunta..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao gerar resposta: {e}")
+
 
 
 
