@@ -131,94 +131,84 @@ def process_pdf(uploaded_file):
     except Exception as e:
         return False, str(e)
 
-def get_resposta(pergunta, perfil):
-    """Gera a resposta e MOSTRA O DEBUG"""
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
-    vectorstore = get_vectorstore()
-    
-    # --- ÁREA DE DEBUG (RAIO-X) ---
-    # Busca os documentos antes de passar para a IA
-    docs_encontrados = vectorstore.similarity_search(pergunta, k=4)
-    
-    with st.expander("🕵️ [DEBUG] O que encontrei no Pinecone:", expanded=False):
-        if not docs_encontrados:
-            st.error("❌ NENHUM DOCUMENTO ENCONTRADO PARA ESSA PERGUNTA!")
-            st.write("Dica: Verifique se o upload foi concluído.")
-        else:
-            st.success(f"✅ Encontrei {len(docs_encontrados)} trechos relevantes.")
-            for i, doc in enumerate(docs_encontrados):
-                st.markdown(f"**Trecho {i+1}:**")
-                st.caption(doc.page_content[:300] + "...") # Mostra os primeiros 300 caracteres
-                st.divider()
-    # ---------------------------------
+# ... (MANTENHA OS IMPORTS E AS FUNÇÕES process_pdf, get_vectorstore, ETC IGUAIS) ...
 
+def get_resposta(pergunta, modo):
+    """Define a personalidade da IA baseada no nível de acesso"""
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
+    vectorstore = get_vectorstore()
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-    if perfil == "server":
+    # PERSONALIDADE 1: CIDADÃO (Simples e Didático)
+    if modo == "cidadao":
         system_prompt = (
-            "Você é um Auditor Assistente. Responda estritamente com base no contexto abaixo. "
-            "Se a resposta não estiver no texto, diga 'Não consta nos documentos carregados'. "
-            "Cite artigos e leis se possível. "
-            "\n\nContexto:\n{context}"
+            "Você é um Assistente Virtual da Prefeitura, focado em ajudar o cidadão comum. "
+            "Use linguagem simples, evite termos técnicos e explique os direitos de forma clara. "
+            "Baseie-se no contexto abaixo:\n{context}"
         )
-    else:
+    
+    # PERSONALIDADE 2 e 3: TÉCNICA (Para Admin e Funcionário)
+    else: 
         system_prompt = (
-            "Você é um assistente da prefeitura. Explique de forma simples com base no texto abaixo. "
-            "\n\nContexto:\n{context}"
+            "Você é um Auditor Sênior de Conformidade Legal. "
+            "Sua resposta deve ser técnica, formal e precisa. "
+            "CITE SEMPRE: O nome da Lei, o número do Artigo e o Parágrafo. "
+            "Se a informação não estiver no contexto, diga 'Não consta nos autos'. "
+            "Contexto:\n{context}"
         )
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         ("human", "{input}"),
     ])
+    
+    chain = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, prompt))
+    return chain.invoke({"input": pergunta})["answer"]
 
-    question_answer_chain = create_stuff_documents_chain(llm, prompt)
-    rag_chain = create_retrieval_chain(retriever, question_answer_chain)
-
-    response = rag_chain.invoke({"input": pergunta})
-    return response["answer"]
-
-# --- INTERFACE ---
+# --- INTERFACE PRINCIPAL ---
 query_params = st.query_params
-modo = query_params.get("mode", "cidadao")
+modo = query_params.get("mode", "cidadao") # Padrão é cidadão
 
-if modo == "server":
-    st.info("🔓 Modo Servidor Público - Acesso Completo")
-    with st.expander("📂 Alimentar Base de Conhecimento (Upload PDF)"):
-        uploaded_file = st.file_uploader("Escolha uma Lei ou Edital", type="pdf")
+# 1. MODO ADMINISTRADOR (Acesso Total)
+if modo == "admin":
+    st.info("🔒 Painel de Controle - Administrador do Sistema")
+    
+    with st.expander("📂 Upload de Documentos (Acesso Exclusivo)", expanded=True):
+        uploaded_file = st.file_uploader("Adicionar Lei/Edital ao Banco", type="pdf")
         if uploaded_file and st.button("Processar Documento"):
-            with st.spinner("Processando Inteligência Artificial..."):
+            with st.spinner("Indexando..."):
                 sucesso, msg = process_pdf(uploaded_file)
-                if sucesso:
-                    st.success(msg)
-                    st.balloons()
-                else:
-                    st.error(f"Erro: {msg}")
+                if sucesso: st.success(msg)
+                else: st.error(msg)
     st.divider()
+    st.subheader("💬 Chat Técnico (Modo Auditor)")
 
-st.subheader("💬 Chat de Auditoria")
+# 2. MODO FUNCIONÁRIO (Sem Upload, Chat Técnico)
+elif modo == "funcionario":
+    st.info("👤 Acesso Servidor Público - Consulta Técnica")
+    st.warning("⚠️ Seu perfil permite apenas consulta. Para inserir documentos, contate o Administrador.")
+    st.subheader("💬 Chat Técnico (Modo Auditor)")
 
-# Inicializa histórico
+# 3. MODO CIDADÃO (Chat Simples)
+else:
+    st.success("👋 Bem-vindo ao Portal da Transparência!")
+    st.subheader("💬 Tire suas dúvidas")
+
+# --- CHATBOT (Comum a todos) ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Exibe mensagens
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Input do usuário
 if prompt := st.chat_input("Digite sua pergunta..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Consultando legislação..."):
-            try:
-                resposta = get_resposta(prompt, modo)
-                st.markdown(resposta)
-                st.session_state.messages.append({"role": "assistant", "content": resposta})
-            except Exception as e:
-                st.error(f"Erro: {e}")
-
+        with st.spinner("Analisando..."):
+            resp = get_resposta(prompt, modo)
+            st.markdown(resp)
+            st.session_state.messages.append({"role": "assistant", "content": resp})
