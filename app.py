@@ -22,22 +22,20 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- CARREGAR CHAVES (SECRETS) ---
+# --- CARREGAR CHAVES ---
 if "GOOGLE_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
     os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]
 else:
-    st.error("Erro: Chaves de API não encontradas. Configure os Secrets no Streamlit Cloud.")
+    st.error("Erro: Chaves de API não encontradas.")
     st.stop()
 
-# --- FUNÇÕES DO SISTEMA (BACKEND) ---
+# --- FUNÇÕES DO SISTEMA ---
 
 @st.cache_resource
 def get_vectorstore():
-    """Conecta ao Pinecone e retorna o banco vetorial"""
-    
-    # --- AQUI ESTAVA O ERRO! AGORA ESTÁ CORRIGIDO ---
-    # Usamos o nome exato que o diagnóstico encontrou
+    """Conecta ao Pinecone usando o modelo CORRETO para sua conta"""
+    # IMPORTANTE: Usando o modelo que seu diagnóstico descobriu
     embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
     
     index_name = "tcc-auditoria" 
@@ -51,16 +49,13 @@ def get_vectorstore():
 def process_pdf(uploaded_file):
     """Processa PDF com sistema Anti-Erro 429 (Backoff Exponencial)"""
     try:
-        # 1. Cria arquivo temporário
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.read())
             tmp_file_path = tmp_file.name
 
-        # 2. Carrega
         loader = PyPDFLoader(tmp_file_path)
         docs = loader.load()
 
-        # 3. Divide (Chunks)
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200
@@ -72,71 +67,74 @@ def process_pdf(uploaded_file):
 
         vectorstore = get_vectorstore()
         
-        # --- ESTRATÉGIA DE ENVIO SEGURO ---
-        batch_size = 5  # Envia de 5 em 5 partes
+        batch_size = 5 
         progress_bar = st.progress(0, text="Iniciando processamento...")
 
         for i in range(0, total_chunks, batch_size):
             batch = splits[i : i + batch_size]
-            
-            # Tenta enviar o lote até 3 vezes se der erro
             sucesso_lote = False
             tentativas = 0
             
             while not sucesso_lote and tentativas < 3:
                 try:
                     vectorstore.add_documents(batch)
-                    sucesso_lote = True # Passou!
+                    sucesso_lote = True
                 except Exception as e:
                     erro_msg = str(e)
-                    if "429" in erro_msg: # Se for erro de cota
+                    if "429" in erro_msg:
                         tentativas += 1
-                        tempo_espera = 20 * tentativas # Espera 20s, depois 40s...
-                        st.warning(f"⏳ O Google pediu uma pausa (Erro 429). Esperando {tempo_espera}s...")
+                        tempo_espera = 20 * tentativas
+                        st.warning(f"⏳ Cota excedida (Erro 429). Pausa de {tempo_espera}s...")
                         time.sleep(tempo_espera)
                     else:
-                        raise e # Se for outro erro, para tudo
+                        raise e
 
-            # Atualiza barra de progresso
             progresso = min((i + batch_size) / total_chunks, 1.0)
             progress_bar.progress(progresso, text=f"Processando parte {min(i+batch_size, total_chunks)} de {total_chunks}...")
-            
-            # Pausa padrão entre lotes para evitar o bloqueio
             time.sleep(2) 
 
         os.remove(tmp_file_path)
         progress_bar.empty()
-        return True, f"Sucesso Absoluto! {total_chunks} partes indexadas."
+        return True, f"Sucesso! {total_chunks} partes indexadas."
 
     except Exception as e:
         return False, str(e)
 
 def get_resposta(pergunta, perfil):
-    """Versão de Depuração - Mostra o que achou no banco"""
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
+    """Gera a resposta e MOSTRA O DEBUG"""
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
     vectorstore = get_vectorstore()
     
-    # Busca os 5 trechos mais parecidos
-    docs = vectorstore.similarity_search(pergunta, k=5)
+    # --- ÁREA DE DEBUG (RAIO-X) ---
+    # Busca os documentos antes de passar para a IA
+    docs_encontrados = vectorstore.similarity_search(pergunta, k=4)
     
-    # --- DEBUG: MOSTRA NA TELA O QUE ACHOU (Só para teste) ---
-    with st.expander("🕵️ O que a IA encontrou no banco de dados?"):
-        if not docs:
-            st.warning("⚠️ Nada encontrado! O Pinecone não retornou nenhum trecho.")
-        for i, doc in enumerate(docs):
-            st.write(f"**Trecho {i+1}:** {doc.page_content[:200]}...") # Mostra os primeiros 200 caracteres
-    # ---------------------------------------------------------
+    with st.expander("🕵️ [DEBUG] O que encontrei no Pinecone:", expanded=False):
+        if not docs_encontrados:
+            st.error("❌ NENHUM DOCUMENTO ENCONTRADO PARA ESSA PERGUNTA!")
+            st.write("Dica: Verifique se o upload foi concluído.")
+        else:
+            st.success(f"✅ Encontrei {len(docs_encontrados)} trechos relevantes.")
+            for i, doc in enumerate(docs_encontrados):
+                st.markdown(f"**Trecho {i+1}:**")
+                st.caption(doc.page_content[:300] + "...") # Mostra os primeiros 300 caracteres
+                st.divider()
+    # ---------------------------------
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
     if perfil == "server":
         system_prompt = (
-            "Você é um Auditor Assistente. Use o contexto abaixo para responder. "
-            "Se a resposta estiver no contexto, responda. Se não, diga 'Não encontrei no documento'."
-            "Contexto:\n{context}"
+            "Você é um Auditor Assistente. Responda estritamente com base no contexto abaixo. "
+            "Se a resposta não estiver no texto, diga 'Não consta nos documentos carregados'. "
+            "Cite artigos e leis se possível. "
+            "\n\nContexto:\n{context}"
         )
     else:
-        system_prompt = "Responda com base no contexto:\n{context}"
+        system_prompt = (
+            "Você é um assistente da prefeitura. Explique de forma simples com base no texto abaixo. "
+            "\n\nContexto:\n{context}"
+        )
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
@@ -148,14 +146,13 @@ def get_resposta(pergunta, perfil):
 
     response = rag_chain.invoke({"input": pergunta})
     return response["answer"]
-# --- INTERFACE (FRONTEND) ---
 
+# --- INTERFACE ---
 query_params = st.query_params
 modo = query_params.get("mode", "cidadao")
 
 if modo == "server":
     st.info("🔓 Modo Servidor Público - Acesso Completo")
-    
     with st.expander("📂 Alimentar Base de Conhecimento (Upload PDF)"):
         uploaded_file = st.file_uploader("Escolha uma Lei ou Edital", type="pdf")
         if uploaded_file and st.button("Processar Documento"):
@@ -166,22 +163,20 @@ if modo == "server":
                     st.balloons()
                 else:
                     st.error(f"Erro: {msg}")
-    
     st.divider()
-    st.subheader("💬 Chat de Auditoria Técnica")
 
-else:
-    st.success("👋 Olá! Sou o Assistente Virtual da Prefeitura.")
-    st.subheader("💬 Tire suas dúvidas sobre leis municipais")
+st.subheader("💬 Chat de Auditoria")
 
-# --- CHATBOT ---
+# Inicializa histórico
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Exibe mensagens
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# Input do usuário
 if prompt := st.chat_input("Digite sua pergunta..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -194,9 +189,4 @@ if prompt := st.chat_input("Digite sua pergunta..."):
                 st.markdown(resposta)
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
-                st.error(f"Erro ao gerar resposta: {e}")
-
-
-
-
-
+                st.error(f"Erro: {e}")
