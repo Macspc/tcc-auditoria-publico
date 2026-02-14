@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import time
 import tempfile
+import hashlib
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_pinecone import PineconeVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -47,12 +48,38 @@ def get_vectorstore():
     return vectorstore
 
 def process_pdf(uploaded_file):
-    """Processa PDF com sistema Anti-Erro 429 (Backoff Exponencial)"""
+    """Processa PDF com Verificação de Duplicidade (Hash MD5)"""
     try:
+        # 1. Lê o arquivo para calcular o HASH (DNA do arquivo)
+        file_content = uploaded_file.read()
+        file_hash = hashlib.md5(file_content).hexdigest()
+        
+        # Reseta o ponteiro do arquivo para o início (pois acabamos de ler tudo)
+        uploaded_file.seek(0)
+
+        # 2. Verifica se esse Hash já existe no Pinecone
+        vectorstore = get_vectorstore()
+        
+        # Faz uma busca "dummy" filtrando apenas por esse Hash
+        # Se retornar algo, é porque o arquivo já está lá
+        try:
+            results = vectorstore.similarity_search(
+                "teste", 
+                k=1, 
+                filter={"file_hash": file_hash}
+            )
+            if results:
+                return False, "⚠️ Este documento JÁ FOI processado anteriormente! Não é necessário enviar novamente."
+        except:
+            # Se der erro na busca (ex: index vazio), apenas ignora e continua
+            pass
+
+        # 3. Se não existe, cria arquivo temporário
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(uploaded_file.read())
+            tmp_file.write(file_content)
             tmp_file_path = tmp_file.name
 
+        # 4. Carrega e Divide
         loader = PyPDFLoader(tmp_file_path)
         docs = loader.load()
 
@@ -62,11 +89,15 @@ def process_pdf(uploaded_file):
         )
         splits = text_splitter.split_documents(docs)
         
-        total_chunks = len(splits)
-        st.write(f"📄 O documento gerou {total_chunks} partes. Iniciando envio lento...")
+        # 5. Adiciona o Hash nos Metadados de cada pedacinho
+        for split in splits:
+            split.metadata["file_hash"] = file_hash
+            split.metadata["file_name"] = uploaded_file.name
 
-        vectorstore = get_vectorstore()
-        
+        total_chunks = len(splits)
+        st.write(f"📄 Documento novo detectado! Gerou {total_chunks} partes.")
+
+        # 6. Envio com Rate Limit (Anti-Erro 429)
         batch_size = 5 
         progress_bar = st.progress(0, text="Iniciando processamento...")
 
@@ -84,7 +115,7 @@ def process_pdf(uploaded_file):
                     if "429" in erro_msg:
                         tentativas += 1
                         tempo_espera = 20 * tentativas
-                        st.warning(f"⏳ Cota excedida (Erro 429). Pausa de {tempo_espera}s...")
+                        st.warning(f"⏳ Cota excedida. Pausa de {tempo_espera}s...")
                         time.sleep(tempo_espera)
                     else:
                         raise e
@@ -95,7 +126,7 @@ def process_pdf(uploaded_file):
 
         os.remove(tmp_file_path)
         progress_bar.empty()
-        return True, f"Sucesso! {total_chunks} partes indexadas."
+        return True, f"Sucesso! Documento '{uploaded_file.name}' indexado."
 
     except Exception as e:
         return False, str(e)
@@ -190,3 +221,4 @@ if prompt := st.chat_input("Digite sua pergunta..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro: {e}")
+
