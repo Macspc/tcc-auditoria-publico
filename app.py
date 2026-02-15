@@ -149,7 +149,7 @@ def process_pdf(uploaded_file):
 def get_resposta(pergunta, modo):
     """Gera resposta com RAG e mostra Debug"""
     # Modelo de Chat (Inteligente)
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-Pro", temperature=0.3)
     vectorstore = get_vectorstore()
     
     # 1. Busca Contexto (Recuperação)
@@ -250,3 +250,4 @@ if prompt := st.chat_input("Digite sua dúvida sobre legislação..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao processar: {e}")
+
