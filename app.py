@@ -39,7 +39,7 @@ def get_vectorstore():
     """Conecta ao Pinecone. Ajuste o modelo se necessário."""
     # Modelo atualizado para contas pagas/novas. 
     # Gera vetores de 768 dimensões por padrão.
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
     
     index_name = "tcc-auditoria" 
     
@@ -250,4 +250,5 @@ if prompt := st.chat_input("Digite sua dúvida sobre legislação..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao processar: {e}")
+
 
