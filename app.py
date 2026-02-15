@@ -48,6 +48,31 @@ def get_vectorstore():
     return vectorstore
 
 def process_pdf(uploaded_file):
+
+# ... (dentro de process_pdf) ...
+        loader = PyPDFLoader(tmp_file_path)
+        docs = loader.load()
+
+        # --- DIAGNÓSTICO DE TEXTO (ADICIONE ISSO) ---
+        if not docs:
+            return False, "❌ O arquivo parece vazio ou corrompido."
+        
+        primeira_pagina = docs[0].page_content
+        caracteres_lidos = len(primeira_pagina)
+        
+        st.info(f"🔍 Diagnóstico de Leitura: Encontrei {caracteres_lidos} caracteres na primeira página.")
+        
+        if caracteres_lidos < 50:
+            st.error("⚠️ ALERTA CRÍTICO: Este PDF parece ser uma IMAGEM (Escaneado). O sistema não consegue ler o texto dele. Tente converter para 'PDF Pesquisável' (OCR) antes de enviar.")
+            return False, "Erro: PDF sem texto selecionável."
+        
+        with st.expander("👀 Ver o que a IA leu (Primeiros 500 caracteres)"):
+            st.write(primeira_pagina[:500])
+        # ---------------------------------------------
+
+        text_splitter = RecursiveCharacterTextSplitter(...)
+        # ... (resto do código continua igual) ...
+    
     """Processa PDF com Verificação de Duplicidade (Hash MD5)"""
     try:
         # 1. Lê o arquivo para calcular o HASH (DNA do arquivo)
@@ -212,4 +237,5 @@ if prompt := st.chat_input("Digite sua pergunta..."):
             resp = get_resposta(prompt, modo)
             st.markdown(resp)
             st.session_state.messages.append({"role": "assistant", "content": resp})
+
 
