@@ -11,33 +11,35 @@ from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="IA Auditoria Municipal", layout="wide")
+# --- 1. CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="IA Auditoria Municipal", layout="wide", page_icon="🏛️")
 
-# Esconder menus do Streamlit
+# Esconde menu padrão do Streamlit para parecer um app profissional
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+    .stAlert {margin-top: 10px;}
     </style>
     """, unsafe_allow_html=True)
 
-# --- CARREGAR CHAVES ---
+# --- 2. CARREGAMENTO DE SEGREDOS (CHAVES API) ---
 if "GOOGLE_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
     os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]
 else:
-    st.error("Erro: Chaves de API não encontradas.")
+    st.error("❌ ERRO CRÍTICO: Chaves de API não configuradas nos Secrets!")
     st.stop()
 
-# --- FUNÇÕES DO SISTEMA ---
+# --- 3. FUNÇÕES DE BACKEND (O CÉREBRO) ---
 
 @st.cache_resource
 def get_vectorstore():
-    """Conecta ao Pinecone usando o modelo CORRETO para sua conta"""
-    # IMPORTANTE: Usando o modelo que seu diagnóstico descobriu
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
+    """Conecta ao Pinecone. Ajuste o modelo se necessário."""
+    # Modelo atualizado para contas pagas/novas. 
+    # Gera vetores de 768 dimensões por padrão.
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     
     index_name = "tcc-auditoria" 
     
@@ -47,138 +49,138 @@ def get_vectorstore():
     )
     return vectorstore
 
+def calculate_md5(file_content):
+    """Gera a 'Impressão Digital' do arquivo"""
+    return hashlib.md5(file_content).hexdigest()
+
 def process_pdf(uploaded_file):
-
-# ... (dentro de process_pdf) ...
-        loader = PyPDFLoader(tmp_file_path)
-        docs = loader.load()
-
-        # --- DIAGNÓSTICO DE TEXTO (ADICIONE ISSO) ---
-        if not docs:
-            return False, "❌ O arquivo parece vazio ou corrompido."
-        
-        primeira_pagina = docs[0].page_content
-        caracteres_lidos = len(primeira_pagina)
-        
-        st.info(f"🔍 Diagnóstico de Leitura: Encontrei {caracteres_lidos} caracteres na primeira página.")
-        
-        if caracteres_lidos < 50:
-            st.error("⚠️ ALERTA CRÍTICO: Este PDF parece ser uma IMAGEM (Escaneado). O sistema não consegue ler o texto dele. Tente converter para 'PDF Pesquisável' (OCR) antes de enviar.")
-            return False, "Erro: PDF sem texto selecionável."
-        
-        with st.expander("👀 Ver o que a IA leu (Primeiros 500 caracteres)"):
-            st.write(primeira_pagina[:500])
-        # ---------------------------------------------
-
-        text_splitter = RecursiveCharacterTextSplitter(...)
-        # ... (resto do código continua igual) ...
-    
-    """Processa PDF com Verificação de Duplicidade (Hash MD5)"""
+    """Processa PDF com: Diagnóstico de Leitura + Anti-Duplicidade + Anti-Erro 429"""
     try:
-        # 1. Lê o arquivo para calcular o HASH (DNA do arquivo)
+        # A. Verifica Duplicidade (Hashing)
         file_content = uploaded_file.read()
-        file_hash = hashlib.md5(file_content).hexdigest()
-        
-        # Reseta o ponteiro do arquivo para o início (pois acabamos de ler tudo)
-        uploaded_file.seek(0)
+        file_hash = calculate_md5(file_content)
+        uploaded_file.seek(0) # Reseta ponteiro
 
-        # 2. Verifica se esse Hash já existe no Pinecone
         vectorstore = get_vectorstore()
         
-        # Faz uma busca "dummy" filtrando apenas por esse Hash
-        # Se retornar algo, é porque o arquivo já está lá
+        # Tenta buscar se o hash já existe (Isso evita gastar dinheiro reprocessando)
         try:
-            results = vectorstore.similarity_search(
-                "teste", 
-                k=1, 
-                filter={"file_hash": file_hash}
-            )
-            if results:
-                return False, "⚠️ Este documento JÁ FOI processado anteriormente! Não é necessário enviar novamente."
+            exists = vectorstore.similarity_search("teste", k=1, filter={"file_hash": file_hash})
+            if exists:
+                return False, "⚠️ Este documento JÁ FOI processado anteriormente! O sistema bloqueou a duplicidade."
         except:
-            # Se der erro na busca (ex: index vazio), apenas ignora e continua
-            pass
+            pass # Se o index for novo, a busca falha, segue o jogo.
 
-        # 3. Se não existe, cria arquivo temporário
+        # B. Cria Arquivo Temporário
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(file_content)
             tmp_file_path = tmp_file.name
 
-        # 4. Carrega e Divide
+        # C. Carrega e DIAGNOSTICA (Para resolver problema do Diário Oficial)
         loader = PyPDFLoader(tmp_file_path)
         docs = loader.load()
 
+        if not docs:
+            return False, "❌ O PDF está vazio ou corrompido."
+        
+        # --- DIAGNÓSTICO DE LEITURA ---
+        primeira_pag = docs[0].page_content
+        chars_lidos = len(primeira_pag)
+        st.info(f"🔍 Diagnóstico: Li {chars_lidos} caracteres na 1ª página.")
+        
+        if chars_lidos < 100:
+            st.warning("⚠️ ALERTA: Pouco texto detectado! Se for um Diário Oficial ESCANEADO (Imagem), a IA não consegue ler. Use um OCR antes.")
+            with st.expander("👀 Ver o que o robô conseguiu ler"):
+                st.write(primeira_pag)
+        # ------------------------------
+
+        # D. Quebra em Pedaços (Chunks)
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200
         )
         splits = text_splitter.split_documents(docs)
         
-        # 5. Adiciona o Hash nos Metadados de cada pedacinho
+        # Adiciona Metadados (Hash e Nome)
         for split in splits:
             split.metadata["file_hash"] = file_hash
-            split.metadata["file_name"] = uploaded_file.name
+            split.metadata["source"] = uploaded_file.name
 
         total_chunks = len(splits)
-        st.write(f"📄 Documento novo detectado! Gerou {total_chunks} partes.")
+        st.write(f"📄 Processando {total_chunks} fragmentos de texto...")
 
-        # 6. Envio com Rate Limit (Anti-Erro 429)
+        # E. Envio Seguro (Rate Limiting)
         batch_size = 5 
-        progress_bar = st.progress(0, text="Iniciando processamento...")
+        progress_bar = st.progress(0, text="Iniciando upload para o Cérebro Digital...")
 
         for i in range(0, total_chunks, batch_size):
             batch = splits[i : i + batch_size]
+            
             sucesso_lote = False
             tentativas = 0
             
-            while not sucesso_lote and tentativas < 3:
+            while not sucesso_lote and tentativas < 5:
                 try:
                     vectorstore.add_documents(batch)
                     sucesso_lote = True
                 except Exception as e:
-                    erro_msg = str(e)
-                    if "429" in erro_msg:
+                    erro = str(e)
+                    if "429" in erro: # Cota excedida ou Rate Limit
                         tentativas += 1
-                        tempo_espera = 20 * tentativas
-                        st.warning(f"⏳ Cota excedida. Pausa de {tempo_espera}s...")
-                        time.sleep(tempo_espera)
+                        tempo = 10 * tentativas
+                        st.toast(f"⏳ O Google pediu calma... Esperando {tempo}s.")
+                        time.sleep(tempo)
                     else:
-                        raise e
+                        st.error(f"Erro fatal no lote {i}: {erro}")
+                        return False, str(e)
 
+            # Atualiza barra
             progresso = min((i + batch_size) / total_chunks, 1.0)
-            progress_bar.progress(progresso, text=f"Processando parte {min(i+batch_size, total_chunks)} de {total_chunks}...")
-            time.sleep(2) 
+            progress_bar.progress(progresso, text=f"Indexando parte {min(i+batch_size, total_chunks)} de {total_chunks}...")
+            time.sleep(1) # Pausa de cortesia
 
         os.remove(tmp_file_path)
         progress_bar.empty()
-        return True, f"Sucesso! Documento '{uploaded_file.name}' indexado."
+        return True, f"✅ Sucesso! Documento '{uploaded_file.name}' blindado no banco de dados."
 
     except Exception as e:
-        return False, str(e)
-
-# ... (MANTENHA OS IMPORTS E AS FUNÇÕES process_pdf, get_vectorstore, ETC IGUAIS) ...
+        return False, f"Erro Geral: {str(e)}"
 
 def get_resposta(pergunta, modo):
-    """Define a personalidade da IA baseada no nível de acesso"""
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+    """Gera resposta com RAG e mostra Debug"""
+    # Modelo de Chat (Inteligente)
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
     vectorstore = get_vectorstore()
+    
+    # 1. Busca Contexto (Recuperação)
+    docs_encontrados = vectorstore.similarity_search(pergunta, k=5)
+    
+    # --- DEBUG VISUAL (RAIO-X) ---
+    with st.expander("🕵️ [AUDITORIA] O que a IA leu para responder? (Debug)", expanded=False):
+        if not docs_encontrados:
+            st.warning("⚠️ O banco retornou ZERO documentos parecidos. Verifique o upload.")
+        for i, doc in enumerate(docs_encontrados):
+            st.markdown(f"**📄 Trecho {i+1} (Fonte: {doc.metadata.get('source', 'Desconhecido')})**")
+            st.caption(f"...{doc.page_content[:400]}...") # Mostra 400 chars
+            st.divider()
+    # -----------------------------
+
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-    # PERSONALIDADE 1: CIDADÃO (Simples e Didático)
+    # 2. Define Personalidade (Prompt)
     if modo == "cidadao":
         system_prompt = (
-            "Você é um Assistente Virtual da Prefeitura, focado em ajudar o cidadão comum. "
-            "Use linguagem simples, evite termos técnicos e explique os direitos de forma clara. "
-            "Baseie-se no contexto abaixo:\n{context}"
+            "Você é um Assistente Virtual da Prefeitura, amigável e didático. "
+            "Seu objetivo é explicar leis complexas em linguagem simples para o cidadão. "
+            "Use OBRIGATORIAMENTE o contexto abaixo. Se a resposta não estiver lá, diga que não sabe. "
+            "Contexto:\n{context}"
         )
-    
-    # PERSONALIDADE 2 e 3: TÉCNICA (Para Admin e Funcionário)
-    else: 
+    else: # Admin ou Funcionario
         system_prompt = (
-            "Você é um Auditor Sênior de Conformidade Legal. "
-            "Sua resposta deve ser técnica, formal e precisa. "
-            "CITE SEMPRE: O nome da Lei, o número do Artigo e o Parágrafo. "
-            "Se a informação não estiver no contexto, diga 'Não consta nos autos'. "
+            "Você é um Auditor Assistente Sênior. "
+            "Responda de forma técnica, citando Artigos, Parágrafos e Leis. "
+            "Baseie-se ESTRITAMENTE no contexto fornecido. "
+            "Se o contexto for insuficiente, informe 'Dados insuficientes nos autos'. "
             "Contexto:\n{context}"
         )
 
@@ -186,56 +188,65 @@ def get_resposta(pergunta, modo):
         ("system", system_prompt),
         ("human", "{input}"),
     ])
-    
+
     chain = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, prompt))
+    
+    # 3. Gera Resposta
     return chain.invoke({"input": pergunta})["answer"]
 
-# --- INTERFACE PRINCIPAL ---
+# --- 4. INTERFACE GRÁFICA (FRONTEND) ---
+
+# Captura o modo via URL (enviado pelo PHP)
 query_params = st.query_params
-modo = query_params.get("mode", "cidadao") # Padrão é cidadão
+modo = query_params.get("mode", "cidadao")
 
-# 1. MODO ADMINISTRADOR (Acesso Total)
+# CABEÇALHO DINÂMICO
 if modo == "admin":
-    st.info("🔒 Painel de Controle - Administrador do Sistema")
-    
-    with st.expander("📂 Upload de Documentos (Acesso Exclusivo)", expanded=True):
-        uploaded_file = st.file_uploader("Adicionar Lei/Edital ao Banco", type="pdf")
+    st.info("🔒 MODO ADMINISTRADOR - Acesso Total")
+    # Apenas Admin vê upload
+    with st.expander("📂 Alimentar Base de Dados (Upload PDF)", expanded=True):
+        uploaded_file = st.file_uploader("Escolha Lei ou Edital (PDF)", type="pdf")
         if uploaded_file and st.button("Processar Documento"):
-            with st.spinner("Indexando..."):
+            with st.spinner("Analisando integridade e indexando..."):
                 sucesso, msg = process_pdf(uploaded_file)
-                if sucesso: st.success(msg)
-                else: st.error(msg)
-    st.divider()
-    st.subheader("💬 Chat Técnico (Modo Auditor)")
-
-# 2. MODO FUNCIONÁRIO (Sem Upload, Chat Técnico)
+                if sucesso:
+                    st.success(msg)
+                    st.balloons()
+                else:
+                    st.error(msg)
+                    
 elif modo == "funcionario":
-    st.info("👤 Acesso Servidor Público - Consulta Técnica")
-    st.warning("⚠️ Seu perfil permite apenas consulta. Para inserir documentos, contate o Administrador.")
-    st.subheader("💬 Chat Técnico (Modo Auditor)")
+    st.info("👤 MODO SERVIDOR PÚBLICO - Consulta Técnica")
+    st.warning("⚠️ Perfil de Consulta: Upload desabilitado.")
 
-# 3. MODO CIDADÃO (Chat Simples)
-else:
-    st.success("👋 Bem-vindo ao Portal da Transparência!")
-    st.subheader("💬 Tire suas dúvidas")
+else: # Cidadão
+    st.success("👋 Olá! Bem-vindo ao Portal da Transparência.")
+    st.markdown("**Como posso ajudar você a entender as leis municipais hoje?**")
 
-# --- CHATBOT (Comum a todos) ---
+st.divider()
+
+# ÁREA DE CHAT
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Mostra histórico
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("Digite sua pergunta..."):
+# Input do usuário
+if prompt := st.chat_input("Digite sua dúvida sobre legislação..."):
+    # 1. Guarda msg do usuário
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # 2. Gera resposta da IA
     with st.chat_message("assistant"):
-        with st.spinner("Analisando..."):
-            resp = get_resposta(prompt, modo)
-            st.markdown(resp)
-            st.session_state.messages.append({"role": "assistant", "content": resp})
-
-
+        with st.spinner("Consultando base legal..."):
+            try:
+                resposta = get_resposta(prompt, modo)
+                st.markdown(resposta)
+                st.session_state.messages.append({"role": "assistant", "content": resposta})
+            except Exception as e:
+                st.error(f"Erro ao processar: {e}")
