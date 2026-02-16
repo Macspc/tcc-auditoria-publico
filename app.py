@@ -148,11 +148,12 @@ def process_pdf(uploaded_file):
 
 def get_resposta(pergunta, modo):
     """Gera resposta com RAG e mostra Debug"""
-    # Modelo de Chat (Inteligente)
-   llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-flash", temperature=0.3)
+    # 1. Configura o Modelo (CORRIGIDO PARA 1.5 E COM O PREFIXO MODELS/)
+    llm = ChatGoogleGenerativeAI(model="models/gemini-1.5-flash", temperature=0.3)
+    
     vectorstore = get_vectorstore()
     
-    # 1. Busca Contexto (Recuperação)
+    # 2. Busca Contexto (Recuperação)
     docs_encontrados = vectorstore.similarity_search(pergunta, k=5)
     
     # --- DEBUG VISUAL (RAIO-X) ---
@@ -167,7 +168,7 @@ def get_resposta(pergunta, modo):
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-    # 2. Define Personalidade (Prompt)
+    # 3. Define Personalidade (Prompt)
     if modo == "cidadao":
         system_prompt = (
             "Você é um Assistente Virtual da Prefeitura, amigável e didático. "
@@ -191,15 +192,9 @@ def get_resposta(pergunta, modo):
 
     chain = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, prompt))
     
-    # 3. Gera Resposta
+    # 4. Gera Resposta
     return chain.invoke({"input": pergunta})["answer"]
-
-# --- 4. INTERFACE GRÁFICA (FRONTEND) ---
-
-# Captura o modo via URL (enviado pelo PHP)
-query_params = st.query_params
-modo = query_params.get("mode", "cidadao")
-
+    
 # CABEÇALHO DINÂMICO
 if modo == "admin":
     st.info("🔒 MODO ADMINISTRADOR - Acesso Total")
@@ -250,6 +245,7 @@ if prompt := st.chat_input("Digite sua dúvida sobre legislação..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao processar: {e}")
+
 
 
 
