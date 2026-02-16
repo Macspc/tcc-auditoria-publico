@@ -39,10 +39,11 @@ else:
 # --- 3. FUNÇÕES DE BACKEND (O CÉREBRO) ---
 
 @st.cache_resource
+@st.cache_resource
 def get_vectorstore():
-    """Conecta ao Pinecone."""
-    # Se der erro 404, troque por "models/embedding-001"
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    """Conecta ao Pinecone usando o modelo UNIVERSAL"""
+    # Trocamos para 'models/embedding-001' que funciona sempre
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     
     index_name = "tcc-auditoria" 
     
@@ -250,3 +251,4 @@ if prompt := st.chat_input("Digite sua dúvida sobre legislação..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao processar: {e}")
+
