@@ -14,13 +14,17 @@ from langchain_core.prompts import ChatPromptTemplate
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="IA Auditoria Municipal", layout="wide", page_icon="🏛️")
 
-# Esconde menu padrão do Streamlit para parecer um app profissional
+# Esconde menu padrão e melhora estética
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     .stAlert {margin-top: 10px;}
+    div[data-testid="stExpander"] details summary p {
+        font-weight: bold;
+        font-size: 1.1em;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -36,10 +40,9 @@ else:
 
 @st.cache_resource
 def get_vectorstore():
-    """Conecta ao Pinecone. Ajuste o modelo se necessário."""
-    # Modelo atualizado para contas pagas/novas. 
-    # Gera vetores de 768 dimensões por padrão.
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
+    """Conecta ao Pinecone."""
+    # Se der erro 404, troque por "models/embedding-001"
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     
     index_name = "tcc-auditoria" 
     
@@ -50,33 +53,33 @@ def get_vectorstore():
     return vectorstore
 
 def calculate_md5(file_content):
-    """Gera a 'Impressão Digital' do arquivo"""
+    """Gera a 'Impressão Digital' do arquivo para evitar duplicidade"""
     return hashlib.md5(file_content).hexdigest()
 
 def process_pdf(uploaded_file):
-    """Processa PDF com: Diagnóstico de Leitura + Anti-Duplicidade + Anti-Erro 429"""
+    """Processa PDF: Diagnóstico + Anti-Duplicidade + Upload Seguro"""
     try:
         # A. Verifica Duplicidade (Hashing)
         file_content = uploaded_file.read()
         file_hash = calculate_md5(file_content)
-        uploaded_file.seek(0) # Reseta ponteiro
+        uploaded_file.seek(0) # Reseta ponteiro do arquivo
 
         vectorstore = get_vectorstore()
         
-        # Tenta buscar se o hash já existe (Isso evita gastar dinheiro reprocessando)
+        # Tenta buscar se o hash já existe
         try:
             exists = vectorstore.similarity_search("teste", k=1, filter={"file_hash": file_hash})
             if exists:
-                return False, "⚠️ Este documento JÁ FOI processado anteriormente! O sistema bloqueou a duplicidade."
+                return False, "⚠️ Este documento JÁ FOI processado anteriormente! Upload cancelado para economizar."
         except:
-            pass # Se o index for novo, a busca falha, segue o jogo.
+            pass # Index novo, segue o jogo.
 
         # B. Cria Arquivo Temporário
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(file_content)
             tmp_file_path = tmp_file.name
 
-        # C. Carrega e DIAGNOSTICA (Para resolver problema do Diário Oficial)
+        # C. Carrega e Diagnostica
         loader = PyPDFLoader(tmp_file_path)
         docs = loader.load()
 
@@ -86,11 +89,11 @@ def process_pdf(uploaded_file):
         # --- DIAGNÓSTICO DE LEITURA ---
         primeira_pag = docs[0].page_content
         chars_lidos = len(primeira_pag)
-        st.info(f"🔍 Diagnóstico: Li {chars_lidos} caracteres na 1ª página.")
+        st.info(f"🔍 Diagnóstico: O sistema leu {chars_lidos} caracteres na 1ª página.")
         
         if chars_lidos < 100:
-            st.warning("⚠️ ALERTA: Pouco texto detectado! Se for um Diário Oficial ESCANEADO (Imagem), a IA não consegue ler. Use um OCR antes.")
-            with st.expander("👀 Ver o que o robô conseguiu ler"):
+            st.warning("⚠️ ALERTA: Pouco texto detectado! Se for um documento ESCANEADO (Imagem), a IA não consegue ler. Use um OCR antes.")
+            with st.expander("👀 Ver o que o robô leu"):
                 st.write(primeira_pag)
         # ------------------------------
 
@@ -101,7 +104,7 @@ def process_pdf(uploaded_file):
         )
         splits = text_splitter.split_documents(docs)
         
-        # Adiciona Metadados (Hash e Nome)
+        # Adiciona Metadados
         for split in splits:
             split.metadata["file_hash"] = file_hash
             split.metadata["source"] = uploaded_file.name
@@ -111,11 +114,10 @@ def process_pdf(uploaded_file):
 
         # E. Envio Seguro (Rate Limiting)
         batch_size = 5 
-        progress_bar = st.progress(0, text="Iniciando upload para o Cérebro Digital...")
+        progress_bar = st.progress(0, text="Indexando conhecimento...")
 
         for i in range(0, total_chunks, batch_size):
             batch = splits[i : i + batch_size]
-            
             sucesso_lote = False
             tentativas = 0
             
@@ -125,19 +127,18 @@ def process_pdf(uploaded_file):
                     sucesso_lote = True
                 except Exception as e:
                     erro = str(e)
-                    if "429" in erro: # Cota excedida ou Rate Limit
+                    if "429" in erro: # Cota excedida
                         tentativas += 1
                         tempo = 10 * tentativas
-                        st.toast(f"⏳ O Google pediu calma... Esperando {tempo}s.")
+                        st.toast(f"⏳ Aguardando liberação da API... ({tempo}s)")
                         time.sleep(tempo)
                     else:
                         st.error(f"Erro fatal no lote {i}: {erro}")
                         return False, str(e)
 
-            # Atualiza barra
             progresso = min((i + batch_size) / total_chunks, 1.0)
             progress_bar.progress(progresso, text=f"Indexando parte {min(i+batch_size, total_chunks)} de {total_chunks}...")
-            time.sleep(1) # Pausa de cortesia
+            time.sleep(1) 
 
         os.remove(tmp_file_path)
         progress_bar.empty()
@@ -148,27 +149,27 @@ def process_pdf(uploaded_file):
 
 def get_resposta(pergunta, modo):
     """Gera resposta com RAG e mostra Debug"""
-    # 1. Configura o Modelo (CORRIGIDO PARA 1.5 E COM O PREFIXO MODELS/)
-    llm = ChatGoogleGenerativeAI(model="models/gemini-1.5-flash", temperature=0.3)
+    # Modelo de Chat (Use models/ antes do nome)
+    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-flash", temperature=0.3)
     
     vectorstore = get_vectorstore()
     
-    # 2. Busca Contexto (Recuperação)
+    # 1. Busca Contexto (Recuperação)
     docs_encontrados = vectorstore.similarity_search(pergunta, k=5)
     
     # --- DEBUG VISUAL (RAIO-X) ---
     with st.expander("🕵️ [AUDITORIA] O que a IA leu para responder? (Debug)", expanded=False):
         if not docs_encontrados:
-            st.warning("⚠️ O banco retornou ZERO documentos parecidos. Verifique o upload.")
+            st.warning("⚠️ O banco retornou ZERO documentos parecidos.")
         for i, doc in enumerate(docs_encontrados):
             st.markdown(f"**📄 Trecho {i+1} (Fonte: {doc.metadata.get('source', 'Desconhecido')})**")
-            st.caption(f"...{doc.page_content[:400]}...") # Mostra 400 chars
+            st.caption(f"...{doc.page_content[:400]}...")
             st.divider()
     # -----------------------------
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-    # 3. Define Personalidade (Prompt)
+    # 2. Define Personalidade (Prompt)
     if modo == "cidadao":
         system_prompt = (
             "Você é um Assistente Virtual da Prefeitura, amigável e didático. "
@@ -191,11 +192,15 @@ def get_resposta(pergunta, modo):
     ])
 
     chain = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, prompt))
-    
-    # 4. Gera Resposta
     return chain.invoke({"input": pergunta})["answer"]
-    
-# CABEÇALHO DINÂMICO
+
+# --- 4. INTERFACE GRÁFICA (FRONTEND) ---
+
+# Captura o modo via URL (enviado pelo PHP) - CORRIGIDO: Definido antes do uso
+query_params = st.query_params
+modo = query_params.get("mode", "cidadao")
+
+# Lógica de Exibição por Perfil
 if modo == "admin":
     st.info("🔒 MODO ADMINISTRADOR - Acesso Total")
     # Apenas Admin vê upload
@@ -245,8 +250,3 @@ if prompt := st.chat_input("Digite sua dúvida sobre legislação..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro ao processar: {e}")
-
-
-
-
-
