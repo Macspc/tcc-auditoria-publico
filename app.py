@@ -136,7 +136,7 @@ def get_resposta(pergunta, modo):
     vectorstore = get_vectorstore()
     
     # 2. Busca Contexto (Aumentamos para 7 trechos para garantir mais contexto)
-    docs_encontrados = vectorstore.similarity_search(pergunta, k=7)
+    docs_encontrados = vectorstore.similarity_search(pergunta, k=3)
     
     # --- DEBUG VISUAL (RAIO-X) ---
     with st.expander("🕵️ [AUDITORIA] Fontes Recuperadas (O que a IA leu)", expanded=False):
@@ -149,7 +149,7 @@ def get_resposta(pergunta, modo):
             st.divider()
     # -----------------------------
 
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 7})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
     # 3. PROMPTS BLINDADOS (AQUI ESTÁ A MÁGICA)
     
@@ -231,4 +231,5 @@ if prompt := st.chat_input("Digite sua dúvida..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro: {e}")
+
 
