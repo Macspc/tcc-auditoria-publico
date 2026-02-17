@@ -124,42 +124,74 @@ def process_pdf(uploaded_file):
     except Exception as e:
         return False, str(e)
 
+
+
 def get_resposta(pergunta, modo):
-    """Gera resposta usando o modelo 2.0 que sua conta tem"""
-    # NOME EXATO QUE APARECEU NO SEU DIAGNÓSTICO:
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.0-flash", temperature=0.3)
+    """Gera resposta com RAG em MODO ESTRITO (Sem Alucinação)"""
+    
+    # 1. Configura o Modelo (Temperatura 0 = Criatividade Zero, Foco Total)
+    # Usamos temperatura 0.0 para garantir que ela não invente nada.
+    llm = ChatGoogleGenerativeAI(model="models/gemini-2.0-flash", temperature=0.0)
     
     vectorstore = get_vectorstore()
-    docs = vectorstore.similarity_search(pergunta, k=5)
     
-    # Debug Visual
-    with st.expander("🕵️ [DEBUG] Fontes Consultadas", expanded=False):
-        if not docs:
-            st.warning("Nenhuma fonte relevante encontrada.")
-        for i, doc in enumerate(docs):
-            st.markdown(f"**Fonte {i+1}:** {doc.metadata.get('source', 'S/N')}")
-            st.caption(f"...{doc.page_content[:300]}...")
+    # 2. Busca Contexto (Aumentamos para 7 trechos para garantir mais contexto)
+    docs_encontrados = vectorstore.similarity_search(pergunta, k=7)
+    
+    # --- DEBUG VISUAL (RAIO-X) ---
+    with st.expander("🕵️ [AUDITORIA] Fontes Recuperadas (O que a IA leu)", expanded=False):
+        if not docs_encontrados:
+            st.error("⚠️ O banco retornou ZERO documentos. A IA não terá base para responder.")
+        for i, doc in enumerate(docs_encontrados):
+            source = doc.metadata.get('source', 'Desconhecido')
+            st.markdown(f"**📄 Trecho {i+1} (Fonte: {source})**")
+            st.caption(f"...{doc.page_content.replace(chr(10), ' ')[:300]}...") # Remove quebras de linha para visualizar melhor
             st.divider()
+    # -----------------------------
 
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 7})
 
+    # 3. PROMPTS BLINDADOS (AQUI ESTÁ A MÁGICA)
+    
     if modo == "cidadao":
         system_prompt = (
-            "Você é um Assistente da Prefeitura. Explique de forma simples para o cidadão. "
-            "Use OBRIGATORIAMENTE o contexto abaixo. Se não souber, diga 'Não encontrei na lei'. "
-            "Contexto:\n{context}"
+            "Você é um Assistente Oficial da Prefeitura. "
+            "Sua única fonte de verdade são os documentos fornecidos abaixo no 'Contexto'. "
+            "INSTRUÇÕES RÍGIDAS:\n"
+            "1. Responda SOMENTE com base no contexto.\n"
+            "2. Se a resposta não estiver no contexto, diga: 'Desculpe, essa informação não consta nos documentos oficiais disponíveis.'\n"
+            "3. NÃO use seu conhecimento externo (internet/treino). "
+            "4. Seja educado e claro.\n\n"
+            "CONTEXTO OFICIAL:\n{context}"
         )
-    else:
+    else: # Admin ou Funcionario
         system_prompt = (
-            "Você é um Auditor Sênior. Responda tecnicamente citando Artigos e Leis. "
-            "Baseie-se ESTRITAMENTE no contexto. "
-            "Contexto:\n{context}"
+            "Você é um Auditor de Conformidade Legal. "
+            "Sua tarefa é extrair informações EXATAS dos documentos fornecidos. "
+            "REGRAS DE OURO:\n"
+            "1. IGNORE todo seu conhecimento prévio. Use APENAS o contexto abaixo.\n"
+            "2. Se o contexto diz 'O céu é verde', você responde 'O céu é verde'. Fidelidade total ao texto.\n"
+            "3. Cite a fonte (Artigo, Parágrafo, Cláusula) sempre que possível.\n"
+            "4. Se a informação não estiver explícita, responda: 'DADO NÃO ENCONTRADO NOS AUTOS'.\n"
+            "5. Não invente, não deduza e não arredonde valores.\n\n"
+            "CONTEXTO DOS AUTOS:\n{context}"
         )
 
-    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "{input}"),
+    ])
+
     chain = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, prompt))
     
     return chain.invoke({"input": pergunta})["answer"]
+
+
+
+
+
+
+
 
 # --- 4. INTERFACE ---
 query_params = st.query_params
@@ -199,3 +231,4 @@ if prompt := st.chat_input("Digite sua dúvida..."):
                 st.session_state.messages.append({"role": "assistant", "content": resposta})
             except Exception as e:
                 st.error(f"Erro: {e}")
+
