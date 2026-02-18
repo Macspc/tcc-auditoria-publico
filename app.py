@@ -324,7 +324,7 @@ with st.sidebar:
         st.info("👤 MODO SERVIDOR - Consulta Técnica")
         st.markdown("---")
         st.subheader("Filtros Avançados")
-        ano = st.selectbox("Ano do documento", ["Todos", "2024", "2023", "2022"])
+        ano = st.selectbox("Ano do documento", ["Todos", "2026", "2025", "2024"])
         tipo = st.selectbox("Tipo", ["Todos", "Leis", "Decretos", "Portarias"])
     else:
         st.success("👋 PORTAL DA TRANSPARÊNCIA")
@@ -406,4 +406,5 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
                 
+
 
