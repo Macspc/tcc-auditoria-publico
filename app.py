@@ -297,7 +297,7 @@ modo = query_params.get("mode", "cidadao")
 
 # Sidebar com informações
 with st.sidebar:
-    st.image("https://via.placeholder.com/150x50?text=Brasão", use_column_width=True)
+    # st.image("https://via.placeholder.com/150x50?text=Brasão", use_column_width=True)
     st.title("🏛️ Painel de Controle")
     
     if modo == "admin":
@@ -406,3 +406,4 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
                 
+
