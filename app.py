@@ -97,8 +97,12 @@ def get_vectorstore():
 @st.cache_resource
 def get_llm():
     """Inicializa o modelo de linguagem Gemini"""
-    # model pode ser gemini-1.5-flash (mais rápido/barato) ou gemini-1.5-pro (mais inteligente)
-    return ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1)
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash", 
+        temperature=0.1,
+        max_retries=1  # <-- ADICIONE ISTO AQUI
+    )
+
 
 # --- 4. PROCESSAMENTO DE PDF ---
 def process_pdf_otimizado(uploaded_file):
@@ -316,3 +320,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
