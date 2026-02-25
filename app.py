@@ -46,7 +46,7 @@ else:
 
 @st.cache_resource
 def get_vectorstore():
-    """Conecta ao Pinecone com configurações otimizadas"""
+    """Conecta ao Pinecone com configurações otimizadas - APENAS PDFs"""
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/gemini-embedding-001",
         task_type="retrieval_query"  # Otimizado para consulta
@@ -59,6 +59,23 @@ def get_vectorstore():
         embedding=embeddings
     )
     return vectorstore
+
+def get_pdf_only_retriever(k=7):
+    """
+    Retorna um retriever configurado para buscar APENAS documentos PDF
+    através de filtro de metadados
+    """
+    vectorstore = get_vectorstore()
+    
+    # Configura o retriever com filtro para buscar apenas PDFs
+    retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={
+            "k": k,
+            "filter": {"doc_type": "PDF"}  # FILTRO CRÍTICO: apenas PDFs
+        }
+    )
+    return retriever
 
 def calculate_md5(file_content):
     return hashlib.md5(file_content).hexdigest()
@@ -112,14 +129,14 @@ def process_pdf_otimizado(uploaded_file):
         
         splits = text_splitter.split_documents(docs)
         
-        # Enriquecimento de metadados
+        # Enriquecimento de metadados - GARANTINDO doc_type = "PDF"
         for i, split in enumerate(splits):
             split.metadata.update({
                 "file_hash": file_hash,
                 "source": uploaded_file.name,
                 "chunk_id": i,
                 "total_chunks": len(splits),
-                "doc_type": "PDF",
+                "doc_type": "PDF",  # MARCADOR CRÍTICO para filtrar depois
                 "content_preview": split.page_content[:100]  # Preview para debug
             })
 
@@ -155,23 +172,27 @@ def process_pdf_otimizado(uploaded_file):
         return False, str(e)
 
 def search_with_metadata(pergunta, k=7):
-    """Busca melhorada com scoring e metadados"""
+    """Busca melhorada com scoring e metadados - APENAS PDFs"""
     vectorstore = get_vectorstore()
     
-    # Busca semântica com mais resultados para melhor recall
-    docs = vectorstore.similarity_search_with_score(pergunta, k=k)
+    # Busca semântica com filtro para APENAS PDFs
+    docs = vectorstore.similarity_search_with_score(
+        pergunta, 
+        k=k,
+        filter={"doc_type": "PDF"}  # FILTRO CRÍTICO: apenas documentos PDF
+    )
     
     # Filtra documentos com score baixo (menos relevantes)
     relevant_docs = []
     for doc, score in docs:
         # Normaliza score (quanto menor, melhor) - ajuste baseado na sua realidade
-        if score < 1.0:  # Ajuste este threshold conforme necessário
+        if score < 0.7:  # Ajuste este threshold conforme necessário
             relevant_docs.append((doc, score))
     
     return relevant_docs
 
 def get_resposta_avancada(pergunta, modo):
-    """Geração de resposta com busca otimizada e verificação de fontes"""
+    """Geração de resposta com busca otimizada e verificação de fontes - APENAS PDFs"""
     
     llm = ChatGoogleGenerativeAI(
         model="models/gemini-2.0-flash", 
@@ -179,7 +200,7 @@ def get_resposta_avancada(pergunta, modo):
         top_p=0.95
     )
     
-    # Busca avançada com scoring
+    # Busca avançada com scoring - APENAS PDFs
     docs_com_scores = search_with_metadata(pergunta, k=10)
     
     # Separa documentos e scores
@@ -189,7 +210,7 @@ def get_resposta_avancada(pergunta, modo):
     # --- AUDITORIA DETALHADA DAS FONTES ---
     with st.expander("🕵️ [AUDITORIA DETALHADA] Fontes e Relevância", expanded=False):
         if not docs_encontrados:
-            st.error("⚠️ Nenhum documento relevante encontrado!")
+            st.error("⚠️ Nenhum documento PDF relevante encontrado!")
         else:
             for i, (doc, score) in enumerate(docs_com_scores):
                 source = doc.metadata.get('source', 'Desconhecido')
@@ -208,7 +229,7 @@ def get_resposta_avancada(pergunta, modo):
     compressor = LLMChainExtractor.from_llm(llm)
     compression_retriever = ContextualCompressionRetriever(
         base_compressor=compressor,
-        base_retriever=get_vectorstore().as_retriever(search_kwargs={"k": 5})
+        base_retriever=get_pdf_only_retriever(k=5)  # USANDO RETRIEVER ESPECÍFICO PARA PDF
     )
     
     # PROMPTS MELHORADOS COM ÊNFASE EM PRECISÃO
@@ -255,11 +276,8 @@ RESPOSTA (com citações das fontes):"""
         ("human", "{input}"),
     ])
     
-    # Pipeline RAG otimizado
-    retriever = get_vectorstore().as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 7}  # Mais documentos para melhor recall
-    )
+    # Pipeline RAG otimizado - USANDO RETRIEVER ESPECÍFICO PARA PDF
+    retriever = get_pdf_only_retriever(k=7)  # Mais documentos para melhor recall
     
     chain = (
         {"context": retriever, "input": RunnablePassthrough()}
@@ -343,7 +361,7 @@ with col1:
     st.title("🤖 Assistente Virtual da Prefeitura")
 with col2:
     st.markdown(f"**Modo Atual:** `{modo.upper()}`")
-    st.caption("Respostas baseadas estritamente em documentos oficiais")
+    st.caption("Respostas baseadas estritamente em documentos oficiais (PDFs)")
 
 # Histórico de conversa
 if "messages" not in st.session_state:
@@ -365,11 +383,11 @@ if prompt := st.chat_input("Digite sua dúvida sobre os documentos municipais...
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("🔍 Consultando base documental..."):
+        with st.spinner("🔍 Consultando base documental (apenas PDFs)..."):
             try:
                 resposta = get_resposta_avancada(prompt, modo)
                 
-                # Busca documentos para exibir fontes
+                # Busca documentos para exibir fontes - APENAS PDFs
                 docs_com_scores = search_with_metadata(prompt, k=3)
                 fontes = list(set([doc.metadata.get('source', 'Fonte não identificada') 
                                   for doc, _ in docs_com_scores]))
@@ -378,9 +396,12 @@ if prompt := st.chat_input("Digite sua dúvida sobre os documentos municipais...
                 
                 # Exibe fontes consultadas
                 if fontes:
-                    with st.expander("📚 Documentos consultados para esta resposta"):
+                    with st.expander("📚 Documentos PDF consultados para esta resposta"):
                         for fonte in fontes:
                             st.caption(f"📄 {fonte}")
+                else:
+                    with st.expander("📚 Documentos consultados"):
+                        st.caption("Nenhum documento PDF relevante encontrado para esta consulta.")
                 
                 # Adiciona feedback visual
                 if any(palavra in resposta.lower() for palavra in ["não encontrado", "não localizado"]):
@@ -401,10 +422,7 @@ if prompt := st.chat_input("Digite sua dúvida sobre os documentos municipais...
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: gray; font-size: 0.8em;'>
-    🏛️ Sistema de Consulta a Documentos Oficiais | Dados baseados exclusivamente em documentos indexados<br>
-    Versão 2.0 - Consulta Avançada com Verificação de Fontes
+    🏛️ Sistema de Consulta a Documentos Oficiais | Dados baseados exclusivamente em PDFs indexados<br>
+    Versão 2.0 - Consulta Avançada com Verificação de Fontes | 🔒 Modo: APENAS PDFs
 </div>
 """, unsafe_allow_html=True)
-                
-
-
