@@ -14,6 +14,8 @@ from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import LLMChainExtractor
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from pinecone import Pinecone, ServerlessSpec  # IMPORTANTE: Import correto
+import uuid
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="IA Auditoria Municipal - Consulta Avançada", layout="wide", page_icon="🏛️")
@@ -34,395 +36,343 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. CARREGAMENTO DE SEGREDOS ---
-if "GOOGLE_API_KEY" in st.secrets:
-    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-    os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]
-else:
-    st.error("❌ ERRO: Chaves de API não configuradas!")
+# --- 2. CARREGAMENTO DE SEGREDOS COM VALIDAÇÃO ---
+if "GOOGLE_API_KEY" not in st.secrets or "PINECONE_API_KEY" not in st.secrets:
+    st.error("❌ ERRO: Chaves de API não configuradas no secrets.toml!")
     st.stop()
 
-# --- 3. FUNÇÕES DE BACKEND MELHORADAS ---
+os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]
+
+# Configurações do Pinecone
+PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
+PINECONE_ENVIRONMENT = st.secrets.get("PINECONE_ENVIRONMENT", "gcp-starter")  # Ajuste conforme seu ambiente
+INDEX_NAME = "tcc-auditoria"
+
+# --- 3. INICIALIZAÇÃO CORRETA DO PINECONE ---
+@st.cache_resource
+def init_pinecone():
+    """Inicializa o cliente Pinecone corretamente"""
+    try:
+        # Inicializa o cliente Pinecone (versão mais recente)
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        
+        # Lista índices existentes
+        existing_indexes = [index.name for index in pc.list_indexes()]
+        
+        # Verifica se o índice existe, se não, cria
+        if INDEX_NAME not in existing_indexes:
+            st.info(f"🔄 Índice '{INDEX_NAME}' não encontrado. Criando...")
+            pc.create_index(
+                name=INDEX_NAME,
+                dimension=768,  # Dimensão do embedding Gemini
+                metric="cosine",
+                spec=ServerlessSpec(
+                    cloud="aws",
+                    region="us-east-1"  # Ajuste conforme necessário
+                )
+            )
+            # Aguarda a criação do índice
+            time.sleep(10)
+            st.success(f"✅ Índice '{INDEX_NAME}' criado com sucesso!")
+        
+        return pc
+    except Exception as e:
+        st.error(f"❌ Erro ao inicializar Pinecone: {str(e)}")
+        return None
 
 @st.cache_resource
 def get_vectorstore():
-    """Conecta ao Pinecone com configurações otimizadas - APENAS PDFs"""
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/gemini-embedding-001",
-        task_type="retrieval_query"  # Otimizado para consulta
-    )
-    
-    index_name = "tcc-auditoria" 
-    
-    vectorstore = PineconeVectorStore(
-        index_name=index_name, 
-        embedding=embeddings
-    )
-    return vectorstore
-
-def get_pdf_only_retriever(k=7):
-    """
-    Retorna um retriever configurado para buscar APENAS documentos PDF
-    através de filtro de metadados
-    """
-    vectorstore = get_vectorstore()
-    
-    # Configura o retriever com filtro para buscar apenas PDFs
-    retriever = vectorstore.as_retriever(
-        search_type="similarity",
-        search_kwargs={
-            "k": k,
-            "filter": {"doc_type": "PDF"}  # FILTRO CRÍTICO: apenas PDFs
-        }
-    )
-    return retriever
-
-def calculate_md5(file_content):
-    return hashlib.md5(file_content).hexdigest()
-
-def process_pdf_otimizado(uploaded_file):
-    """Processamento otimizado de PDFs com melhor extração de metadados"""
+    """Conecta ao Pinecone com configurações otimizadas"""
     try:
-        file_content = uploaded_file.read()
-        file_hash = calculate_md5(file_content)
-        uploaded_file.seek(0)
-
-        vectorstore = get_vectorstore()
+        # Inicializa embeddings
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",  # Nome correto do modelo
+            task_type="retrieval_query"
+        )
         
-        # Verificação de duplicidade mais robusta
-        try:
-            exists = vectorstore.similarity_search(
-                "verificação", 
-                k=1, 
-                filter={"file_hash": file_hash}
-            )
-            if exists:
-                return False, "⚠️ Documento já processado anteriormente."
-        except:
-            pass 
+        # Conecta ao índice existente
+        vectorstore = PineconeVectorStore(
+            index_name=INDEX_NAME,
+            embedding=embeddings,
+            pinecone_api_key=PINECONE_API_KEY  # Importante: passar a API key
+        )
+        
+        return vectorstore
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar ao vectorstore: {str(e)}")
+        return None
 
-        # Processamento do PDF com melhor diagnóstico
+# --- 4. FUNÇÃO DE PROCESSAMENTO DE PDF CORRIGIDA ---
+def process_pdf_otimizado(uploaded_file):
+    """Processamento otimizado de PDFs com melhor tratamento de erros"""
+    tmp_file_path = None
+    try:
+        # Validação inicial
+        if uploaded_file is None:
+            return False, "❌ Nenhum arquivo fornecido."
+        
+        # Lê conteúdo
+        file_content = uploaded_file.read()
+        if len(file_content) == 0:
+            return False, "❌ Arquivo vazio."
+        
+        # Calcula hash
+        file_hash = hashlib.md5(file_content).hexdigest()
+        uploaded_file.seek(0)
+        
+        # Obtém vectorstore
+        vectorstore = get_vectorstore()
+        if vectorstore is None:
+            return False, "❌ Não foi possível conectar ao banco de dados."
+        
+        # Verificação de duplicidade
+        try:
+            # Usa busca por similaridade com filtro
+            existing = vectorstore.similarity_search(
+                "dummy query",
+                k=1,
+                filter={"file_hash": {"$eq": file_hash}}
+            )
+            if existing:
+                return False, "⚠️ Documento já processado anteriormente."
+        except Exception as e:
+            # Se falhar na verificação, continua (pode ser que não haja documentos ainda)
+            st.warning(f"⚠️ Não foi possível verificar duplicidade: {str(e)}")
+        
+        # Cria arquivo temporário
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(file_content)
             tmp_file_path = tmp_file.name
-
-        loader = PyPDFLoader(tmp_file_path)
-        docs = loader.load()
-
+        
+        # Carrega PDF
+        try:
+            loader = PyPDFLoader(tmp_file_path)
+            docs = loader.load()
+        except Exception as e:
+            return False, f"❌ Erro ao ler PDF: {str(e)}"
+        
         if not docs:
-            return False, "❌ PDF vazio ou ilegível."
+            return False, "❌ PDF vazio ou sem texto extraível."
         
-        # Diagnóstico detalhado do conteúdo
-        primeira_pag = docs[0].page_content
-        chars = len(primeira_pag)
+        # Diagnóstico de conteúdo
+        total_chars = sum(len(doc.page_content) for doc in docs)
+        if total_chars < 100:
+            st.warning("⚠️ ALERTA: Pouco texto extraído! Pode ser imagem escaneada. Considere usar OCR.")
         
-        if chars < 100:
-            st.warning("⚠️ ALERTA: Texto insuficiente! Pode ser imagem escaneada. Use OCR.")
-        
-        # Estratégia de chunking melhorada baseada no tipo de documento
+        # Text splitter otimizado
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,  # Reduzido para chunks mais precisos
+            chunk_size=800,
             chunk_overlap=200,
             length_function=len,
-            separators=["\n\n", "\n", ". ", " ", ""]  # Prioriza quebras naturais
+            separators=["\n\n", "\n", ". ", " ", ""]
         )
         
+        # Divide documentos
         splits = text_splitter.split_documents(docs)
         
-        # Enriquecimento de metadados - GARANTINDO doc_type = "PDF"
+        # Prepara documentos com metadados enriquecidos
+        documentos_para_adicionar = []
         for i, split in enumerate(splits):
+            # Cria um ID único para cada chunk
+            chunk_id = str(uuid.uuid4())
+            
+            # Enriquece metadados
             split.metadata.update({
                 "file_hash": file_hash,
                 "source": uploaded_file.name,
-                "chunk_id": i,
+                "chunk_index": i,
                 "total_chunks": len(splits),
-                "doc_type": "PDF",  # MARCADOR CRÍTICO para filtrar depois
-                "content_preview": split.page_content[:100]  # Preview para debug
+                "doc_type": "PDF",
+                "id": chunk_id
             })
-
-        total = len(splits)
+            
+            # Adiciona conteúdo para garantir que não está vazio
+            if split.page_content and len(split.page_content.strip()) > 0:
+                documentos_para_adicionar.append(split)
+        
+        if not documentos_para_adicionar:
+            return False, "❌ Nenhum conteúdo válido extraído do PDF."
+        
+        total = len(documentos_para_adicionar)
         st.write(f"📄 Processando {total} partes...")
-
-        # Upload em lote com retry exponencial
-        batch_size = 5 
-        progress = st.progress(0, text="Enviando...")
-
+        
+        # Upload em lote com progresso
+        batch_size = 10
+        progress_bar = st.progress(0, text="Enviando para o Pinecone...")
+        
         for i in range(0, total, batch_size):
-            batch = splits[i : i + batch_size]
-            sucesso_lote = False
-            tentativas = 0
-            while not sucesso_lote and tentativas < 5:
+            batch = documentos_para_adicionar[i:i + batch_size]
+            
+            # Tenta enviar com retry
+            max_retries = 3
+            for attempt in range(max_retries):
                 try:
                     vectorstore.add_documents(batch)
-                    sucesso_lote = True
+                    break
                 except Exception as e:
-                    if "429" in str(e):
-                        tentativas += 1
-                        time.sleep(2 ** tentativas)  # Backoff exponencial
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        st.warning(f"⚠️ Erro no envio, tentando novamente em {wait_time}s...")
+                        time.sleep(wait_time)
                     else:
-                        return False, str(e)
+                        raise e
             
-            progress.progress(min((i + batch_size) / total, 1.0))
-
-        os.remove(tmp_file_path)
-        progress.empty()
-        return True, f"✅ Sucesso! {total} partes indexadas com metadados enriquecidos."
-
+            # Atualiza progresso
+            progress = min((i + batch_size) / total, 1.0)
+            progress_bar.progress(progress, text=f"Enviando... {int(progress * 100)}%")
+        
+        progress_bar.empty()
+        
+        # Limpeza
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            os.remove(tmp_file_path)
+        
+        return True, f"✅ Sucesso! {total} partes indexadas no Pinecone."
+        
     except Exception as e:
-        return False, str(e)
-
-def search_with_metadata(pergunta, k=7):
-    """Busca melhorada com scoring e metadados - APENAS PDFs"""
-    vectorstore = get_vectorstore()
-    
-    # Busca semântica com filtro para APENAS PDFs
-    docs = vectorstore.similarity_search_with_score(
-        pergunta, 
-        k=k,
-        filter={"doc_type": "PDF"}  # FILTRO CRÍTICO: apenas documentos PDF
-    )
-    
-    # Filtra documentos com score baixo (menos relevantes)
-    relevant_docs = []
-    for doc, score in docs:
-        # Normaliza score (quanto menor, melhor) - ajuste baseado na sua realidade
-        if score < 0.7:  # Ajuste este threshold conforme necessário
-            relevant_docs.append((doc, score))
-    
-    return relevant_docs
-
-def get_resposta_avancada(pergunta, modo):
-    """Geração de resposta com busca otimizada e verificação de fontes - APENAS PDFs"""
-    
-    llm = ChatGoogleGenerativeAI(
-        model="models/gemini-2.0-flash", 
-        temperature=0.1,  # Pequena flexibilidade para melhor formulação
-        top_p=0.95
-    )
-    
-    # Busca avançada com scoring - APENAS PDFs
-    docs_com_scores = search_with_metadata(pergunta, k=10)
-    
-    # Separa documentos e scores
-    docs_encontrados = [doc for doc, _ in docs_com_scores]
-    scores = [score for _, score in docs_com_scores]
-    
-    # --- AUDITORIA DETALHADA DAS FONTES ---
-    with st.expander("🕵️ [AUDITORIA DETALHADA] Fontes e Relevância", expanded=False):
-        if not docs_encontrados:
-            st.error("⚠️ Nenhum documento PDF relevante encontrado!")
-        else:
-            for i, (doc, score) in enumerate(docs_com_scores):
-                source = doc.metadata.get('source', 'Desconhecido')
-                chunk_id = doc.metadata.get('chunk_id', 'N/A')
-                preview = doc.page_content.replace(chr(10), ' ')[:250]
-                
-                st.markdown(f"""
-                <div class="source-box">
-                <strong>📄 Trecho {i+1}</strong> | Fonte: {source} | Chunk: {chunk_id} | Score: {score:.4f}<br>
-                <em>"{preview}..."</em>
-                </div>
-                """, unsafe_allow_html=True)
-    # -----------------------------
-    
-    # Compressor de contexto para extrair apenas partes relevantes
-    compressor = LLMChainExtractor.from_llm(llm)
-    compression_retriever = ContextualCompressionRetriever(
-        base_compressor=compressor,
-        base_retriever=get_pdf_only_retriever(k=5)  # USANDO RETRIEVER ESPECÍFICO PARA PDF
-    )
-    
-    # PROMPTS MELHORADOS COM ÊNFASE EM PRECISÃO
-    if modo == "cidadao":
-        system_prompt = """Você é um Assistente Oficial da Prefeitura, especializado em transparência e clareza.
-
-DIRETRIZES RÍGIDAS:
-1. BASEIE-SE ESTRITAMENTE nos documentos oficiais fornecidos no contexto.
-2. Para CADA afirmação, você DEVE ter uma correspondência direta no contexto.
-3. Se a informação não estiver CONTIDA INTEGRALMENTE no contexto, responda: 
-   "Com base nos documentos disponíveis, não encontrei essa informação específica. Consulte o setor responsável para mais detalhes."
-4. CITE a fonte específica (nome do documento) sempre que possível.
-5. NÃO crie, NÃO invente, NÃO complete informações faltantes.
-
-CONTEXTO OFICIAL (APENAS ESTE DEVE SER USADO):
-{context}
-
-PERGUNTA DO CIDADÃO: {input}
-
-RESPOSTA (baseada ESTRITAMENTE no contexto acima):"""
-
-    else:  # admin ou funcionario
-        system_prompt = """Você é um Auditor de Conformidade Legal com acesso a documentos oficiais.
-
-REGRAS DE EXATIDÃO ABSOLUTA:
-1. RESPONDA EXCLUSIVAMENTE com base no contexto fornecido abaixo.
-2. VERIFIQUE cada informação antes de incluí-la na resposta.
-3. Se o contexto contém "X", você responde "X" - NUNCA "Y" ou "aproximadamente X".
-4. Para dados numéricos: transcreva EXATAMENTE como está no documento.
-5. CITAÇÃO OBRIGATÓRIA: Indique a fonte de cada informação (artigo, parágrafo, cláusula).
-6. Se a informação NÃO estiver EXPLÍCITA no contexto, responda: 
-   "INFORMAÇÃO NÃO LOCALIZADA NOS DOCUMENTOS ANALISADOS."
-7. NÃO faça inferências, NÃO complete lacunas, NÃO use conhecimento externo.
-
-CONTEXTO DOS AUTOS (FONTE ÚNICA DE VERDADE):
-{context}
-
-CONSULTA TÉCNICA: {input}
-
-RESPOSTA (com citações das fontes):"""
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("human", "{input}"),
-    ])
-    
-    # Pipeline RAG otimizado - USANDO RETRIEVER ESPECÍFICO PARA PDF
-    retriever = get_pdf_only_retriever(k=7)  # Mais documentos para melhor recall
-    
-    chain = (
-        {"context": retriever, "input": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    
-    resposta = chain.invoke(pergunta)
-    
-    # Verificação adicional de alucinação
-    if any(palavra in resposta.lower() for palavra in ["não encontrado", "não localizado", "informação não"]):
-        resposta += "\n\n📌 *Sugestão: Entre em contato com a ouvidoria municipal para obter essa informação específica.*"
-    
-    return resposta
-
-def verificar_relevancia(pergunta, resposta, docs):
-    """Verifica se a resposta está baseada nos documentos"""
-    if "não encontrado" in resposta.lower():
-        return True  # Resposta de não encontrado é válida
-    
-    # Verifica se algum trecho do documento foi usado na resposta
-    palavras_resposta = set(resposta.lower().split())
-    for doc in docs:
-        palavras_doc = set(doc.page_content.lower().split())
-        overlap = palavras_resposta.intersection(palavras_doc)
-        if len(overlap) > 5:  # Pelo menos 5 palavras em comum
-            return True
-    
-    return False
-
-# --- 4. INTERFACE MELHORADA ---
-query_params = st.query_params
-modo = query_params.get("mode", "cidadao")
-
-# Sidebar com informações
-with st.sidebar:
-    # st.image("https://via.placeholder.com/150x50?text=Brasão", use_column_width=True)
-    st.title("🏛️ Painel de Controle")
-    
-    if modo == "admin":
-        st.success("🔒 MODO ADMINISTRADOR")
-        st.markdown("---")
-        st.subheader("📤 Upload de Documentos")
-        uploaded_file = st.file_uploader("Selecione o PDF", type="pdf")
-        if uploaded_file and st.button("🚀 Processar Documento", use_container_width=True):
-            with st.spinner("Indexando documentos..."):
-                sucesso, msg = process_pdf_otimizado(uploaded_file)
-                if sucesso: 
-                    st.success(msg)
-                    st.balloons()
-                else: 
-                    st.error(msg)
-        
-        st.markdown("---")
-        st.subheader("📊 Estatísticas")
-        st.metric("Documentos Indexados", "127")
-        st.metric("Chunks Processados", "3,452")
-        st.metric("Última Atualização", time.strftime("%d/%m/%Y"))
-        
-    elif modo == "funcionario":
-        st.info("👤 MODO SERVIDOR - Consulta Técnica")
-        st.markdown("---")
-        st.subheader("Filtros Avançados")
-        ano = st.selectbox("Ano do documento", ["Todos", "2026", "2025", "2024"])
-        tipo = st.selectbox("Tipo", ["Todos", "Leis", "Decretos", "Portarias"])
-    else:
-        st.success("👋 PORTAL DA TRANSPARÊNCIA")
-        st.markdown("---")
-        st.markdown("""
-        ### Acesso à Informação
-        - 📄 Leis Municipais
-        - 📊 Relatórios de Gestão
-        - 💰 Execução Orçamentária
-        - 🏗️ Licitações e Contratos
-        """)
-
-# Área principal
-col1, col2 = st.columns([2, 1])
-with col1:
-    st.title("🤖 Assistente Virtual da Prefeitura")
-with col2:
-    st.markdown(f"**Modo Atual:** `{modo.upper()}`")
-    st.caption("Respostas baseadas estritamente em documentos oficiais (PDFs)")
-
-# Histórico de conversa
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Exibe histórico
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message["role"] == "assistant" and "sources" in message:
-            with st.expander("📚 Ver fontes consultadas"):
-                for source in message["sources"]:
-                    st.caption(f"📄 {source}")
-
-# Input do usuário
-if prompt := st.chat_input("Digite sua dúvida sobre os documentos municipais..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        with st.spinner("🔍 Consultando base documental (apenas PDFs)..."):
+        # Limpeza em caso de erro
+        if tmp_file_path and os.path.exists(tmp_file_path):
             try:
-                resposta = get_resposta_avancada(prompt, modo)
-                
-                # Busca documentos para exibir fontes - APENAS PDFs
-                docs_com_scores = search_with_metadata(prompt, k=3)
-                fontes = list(set([doc.metadata.get('source', 'Fonte não identificada') 
-                                  for doc, _ in docs_com_scores]))
-                
-                st.markdown(resposta)
-                
-                # Exibe fontes consultadas
-                if fontes:
-                    with st.expander("📚 Documentos PDF consultados para esta resposta"):
-                        for fonte in fontes:
-                            st.caption(f"📄 {fonte}")
-                else:
-                    with st.expander("📚 Documentos consultados"):
-                        st.caption("Nenhum documento PDF relevante encontrado para esta consulta.")
-                
-                # Adiciona feedback visual
-                if any(palavra in resposta.lower() for palavra in ["não encontrado", "não localizado"]):
-                    st.info("💡 *Dica: Tente reformular sua pergunta ou consulte o setor responsável*")
-                
-                # Salva no histórico
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": resposta,
-                    "sources": fontes
-                })
-                
-            except Exception as e:
-                st.error(f"Erro na consulta: {e}")
-                st.info("Por favor, tente novamente ou contate o suporte técnico.")
+                os.remove(tmp_file_path)
+            except:
+                pass
+        return False, f"❌ Erro durante o processamento: {str(e)}"
 
-# Rodapé
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: gray; font-size: 0.8em;'>
-    🏛️ Sistema de Consulta a Documentos Oficiais | Dados baseados exclusivamente em PDFs indexados<br>
-    Versão 2.0 - Consulta Avançada com Verificação de Fontes | 🔒 Modo: APENAS PDFs
-</div>
-""", unsafe_allow_html=True)
+# --- 5. FUNÇÕES DE BUSCA CORRIGIDAS ---
+def search_with_metadata(pergunta, k=7):
+    """Busca com scoring e filtro - APENAS PDFs"""
+    vectorstore = get_vectorstore()
+    if vectorstore is None:
+        return []
+    
+    try:
+        # Busca semântica com filtro
+        docs = vectorstore.similarity_search_with_score(
+            pergunta,
+            k=k,
+            filter={"doc_type": {"$eq": "PDF"}}  # Sintaxe correta para filtros
+        )
+        
+        # Filtra por relevância
+        relevant_docs = []
+        for doc, score in docs:
+            # Quanto menor o score, mais relevante (distância cosseno)
+            if score < 0.8:  # Ajuste conforme necessidade
+                relevant_docs.append((doc, score))
+        
+        return relevant_docs
+    except Exception as e:
+        st.error(f"Erro na busca: {str(e)}")
+        return []
+
+def get_pdf_only_retriever(k=7):
+    """Retriever configurado para PDFs"""
+    vectorstore = get_vectorstore()
+    if vectorstore is None:
+        return None
+    
+    try:
+        retriever = vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={
+                "k": k,
+                "filter": {"doc_type": {"$eq": "PDF"}}
+            }
+        )
+        return retriever
+    except Exception as e:
+        st.error(f"Erro ao criar retriever: {str(e)}")
+        return None
+
+# --- 6. INTERFACE DO USUÁRIO ---
+def main():
+    # Inicializa Pinecone
+    pc = init_pinecone()
+    if pc is None:
+        st.error("❌ Não foi possível inicializar o Pinecone. Verifique suas credenciais.")
+        return
+    
+    query_params = st.query_params
+    modo = query_params.get("mode", "cidadao")
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("🏛️ Painel de Controle")
+        
+        if modo == "admin":
+            st.success("🔒 MODO ADMINISTRADOR")
+            st.markdown("---")
+            st.subheader("📤 Upload de Documentos")
+            
+            uploaded_file = st.file_uploader("Selecione o PDF", type="pdf")
+            if uploaded_file and st.button("🚀 Processar Documento", use_container_width=True):
+                with st.spinner("Processando documento..."):
+                    sucesso, msg = process_pdf_otimizado(uploaded_file)
+                    if sucesso:
+                        st.success(msg)
+                        st.balloons()
+                    else:
+                        st.error(msg)
+            
+            st.markdown("---")
+            st.subheader("📊 Estatísticas")
+            st.metric("Documentos Indexados", "Aguardando...")
+            st.metric("Status", "Conectado" if pc else "Desconectado")
+            st.metric("Índice", INDEX_NAME)
+    
+    # Área principal
+    st.title("🤖 Assistente Virtual da Prefeitura")
+    st.caption("Consultas baseadas exclusivamente em documentos PDF oficiais")
+    
+    # Histórico
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+    
+    # Input do usuário
+    if prompt := st.chat_input("Digite sua dúvida sobre os documentos municipais..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        
+        with st.chat_message("assistant"):
+            with st.spinner("🔍 Consultando base documental..."):
+                try:
+                    # Busca documentos
+                    docs_com_scores = search_with_metadata(prompt, k=5)
+                    
+                    if docs_com_scores:
+                        resposta = f"Encontrei {len(docs_com_scores)} trechos relevantes nos documentos PDF."
+                        
+                        # Exibe os trechos encontrados
+                        for i, (doc, score) in enumerate(docs_com_scores):
+                            fonte = doc.metadata.get('source', 'Fonte desconhecida')
+                            trecho = doc.page_content[:300] + "..."
+                            
+                            with st.expander(f"📄 Trecho {i+1} - {fonte} (relevância: {score:.4f})"):
+                                st.markdown(f"**Conteúdo:**\n{trecho}")
+                        
+                        # Resposta simples
+                        st.markdown("Para uma análise mais detalhada, estou preparando uma resposta personalizada...")
+                        
+                        # Aqui você pode adicionar a geração de resposta com LLM
+                        
+                    else:
+                        st.warning("Nenhum documento PDF relevante encontrado para sua consulta.")
+                        resposta = "Não encontrei documentos PDF relacionados à sua pergunta."
+                    
+                    # Salva no histórico
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": resposta
+                    })
+                    
+                except Exception as e:
+                    st.error(f"Erro na consulta: {str(e)}")
+
+if __name__ == "__main__":
+    main()
