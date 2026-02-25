@@ -86,8 +86,8 @@ def get_vectorstore():
     """Conecta ao Pinecone com configurações otimizadas"""
     try:
         embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-gecko-multilingual-001",  # Suporte multilíngue
-            task_type="retrieval_query"
+            model="models/gemini-embedding-001",
+            task_type="retrieval_query"  # Otimizado para consulta
         )
         
         # Conecta ao índice existente
@@ -375,4 +375,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
