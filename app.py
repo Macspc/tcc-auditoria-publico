@@ -342,7 +342,7 @@ def main():
             with st.spinner("🔍 Consultando base documental..."):
                 try:
                     # Busca documentos
-                    docs_com_scores = search_with_metadata(prompt, k=5)
+                    docs_com_scores = search_with_metadata(prompt, k=7)
                     
                     if docs_com_scores:
                         resposta = f"Encontrei {len(docs_com_scores)} trechos relevantes nos documentos PDF."
@@ -375,5 +375,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
