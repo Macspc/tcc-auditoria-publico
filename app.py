@@ -4,6 +4,8 @@ import time
 import tempfile
 import hashlib
 import uuid
+import re
+import random
 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_pinecone import PineconeVectorStore
@@ -14,19 +16,30 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from pinecone import Pinecone, ServerlessSpec
 
-# --- 1. CONFIGURAÇÃO DA PÁGINA ---
+# --- 1. CONFIGURAÇÃO DA PÁGINA (OTIMIZADA PARA IFRAME) ---
 st.set_page_config(
-    page_title="IA Auditoria Municipal - Consulta Avançada", 
-    layout="wide", 
-    page_icon="🏛️"
+    page_title="IA Auditoria Municipal",
+    layout="wide",
+    page_icon="🏛️",
+    initial_sidebar_state="collapsed"  # Sidebar fechada por padrão no iframe
 )
 
+# CSS otimizado para integração com iframe PHP
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    .stAlert {margin-top: 10px;}
+    
+    /* Ajustes para iframe */
+    .stApp {
+        margin-top: -80px;  /* Compensa header do Streamlit */
+    }
+    
+    .stAlert {
+        margin-top: 10px;
+    }
+    
     .source-box {
         background-color: #f0f2f6;
         border-radius: 5px;
@@ -34,68 +47,92 @@ st.markdown("""
         margin: 5px 0;
         border-left: 4px solid #4CAF50;
     }
+    
+    /* Cores por perfil (matching PHP) */
+    .admin-theme {
+        --primary-color: #2c3e50;
+    }
+    .funcionario-theme {
+        --primary-color: #2980b9;
+    }
+    .cidadao-theme {
+        --primary-color: #ecf0f1;
+    }
+    
+    /* Responsividade para iframe */
+    @media (max-width: 768px) {
+        .stApp {
+            margin-top: -60px;
+        }
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SISTEMA DE AUTENTICAÇÃO SIMPLIFICADO ---
-def verificar_autenticacao():
-    """Verifica se usuário está autenticado como servidor ou admin"""
-    if "autenticado" not in st.session_state:
-        st.session_state.autenticado = False
-        st.session_state.perfil = None
-    
-    # Verificar query params para login
+# --- 2. DETECÇÃO DO MODO VIA QUERY PARAMS (ENVIADO PELO PHP) ---
+def detectar_modo():
+    """
+    Detecta o modo de acesso baseado nos query params enviados pelo PHP
+    Modos:
+    - admin: Acesso total (upload + chat técnico + referências)
+    - funcionario: Chat técnico com referências
+    - cidadao: Chat simples e casual (padrão)
+    """
     query_params = st.query_params
+    
+    # Modo enviado pelo PHP via iframe
     modo = query_params.get("mode", "cidadao")
     
-    if modo in ["servidor", "admin"]:
-        # Em produção, aqui teria uma autenticação real (OAuth, banco de dados, etc.)
-        if "token" in query_params:
-            token_valido = validar_token(query_params["token"])
-            if token_valido:
-                st.session_state.autenticado = True
-                st.session_state.perfil = modo
-            else:
-                st.session_state.autenticado = False
-                st.session_state.perfil = "cidadao"
-        else:
-            st.session_state.autenticado = False
-            st.session_state.perfil = "cidadao"
-    else:
-        st.session_state.autenticado = False
-        st.session_state.perfil = "cidadao"
+    # Verificar se está embedado (dentro do iframe do PHP)
+    embed = query_params.get("embed", "false")
     
-    return st.session_state.autenticado, st.session_state.perfil
+    # Mapear modos válidos
+    modos_validos = {
+        "admin": {
+            "nome": "Administrador",
+            "nivel": "admin",
+            "icone": "🔒",
+            "cor": "#2c3e50"
+        },
+        "funcionario": {
+            "nome": "Servidor",
+            "nivel": "funcionario", 
+            "icone": "🔐",
+            "cor": "#2980b9"
+        },
+        "cidadao": {
+            "nome": "Cidadão",
+            "nivel": "cidadao",
+            "icone": "👤",
+            "cor": "#ecf0f1"
+        }
+    }
+    
+    if modo in modos_validos:
+        return modos_validos[modo], embed == "true"
+    else:
+        # Fallback para cidadão
+        return modos_validos["cidadao"], embed == "true"
 
-def validar_token(token):
-    """Valida token de acesso (simplificado para exemplo)"""
-    # Em produção: validar JWT, consultar banco, etc.
-    tokens_validos = st.secrets.get("TOKENS_AUTORIZADOS", "").split(",")
-    return token in tokens_validos
-
-# --- 3. CARREGAMENTO DE SEGREDOS COM VALIDAÇÃO ---
+# --- 3. CARREGAMENTO DE SEGREDOS ---
 if "GOOGLE_API_KEY" not in st.secrets or "PINECONE_API_KEY" not in st.secrets:
-    st.error("❌ ERRO: Chaves de API não configuradas no secrets.toml!")
-    st.info("💰 Para contratar a versão PRO com acesso completo, entre em contato: (XX) XXXX-XXXX")
+    st.error("❌ Configuração necessária. Entre em contato com o administrador do sistema.")
     st.stop()
 
 os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 os.environ["PINECONE_API_KEY"] = st.secrets["PINECONE_API_KEY"]
 
-# Configurações do Pinecone
 PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
 INDEX_NAME = "tcc-auditoria"
 
-# --- 4. INICIALIZAÇÃO CORRETA DO PINECONE ---
+# --- 4. INICIALIZAÇÃO DO PINECONE (CACHE) ---
 @st.cache_resource
 def init_pinecone():
-    """Inicializa o cliente Pinecone corretamente"""
+    """Inicializa o cliente Pinecone"""
     try:
         pc = Pinecone(api_key=PINECONE_API_KEY)
         existing_indexes = [index.name for index in pc.list_indexes()]
         
         if INDEX_NAME not in existing_indexes:
-            st.info(f"🔄 Índice '{INDEX_NAME}' não encontrado. Criando...")
             pc.create_index(
                 name=INDEX_NAME,
                 dimension=768,
@@ -106,16 +143,15 @@ def init_pinecone():
                 )
             )
             time.sleep(10)
-            st.success(f"✅ Índice '{INDEX_NAME}' criado com sucesso!")
         
         return pc
     except Exception as e:
-        st.error(f"❌ Erro ao inicializar Pinecone: {str(e)}")
+        st.error(f"❌ Erro de conexão com banco de dados: {str(e)}")
         return None
 
 @st.cache_resource
 def get_vectorstore():
-    """Conecta ao Pinecone com configurações otimizadas"""
+    """Conecta ao Pinecone"""
     try:
         embeddings = GoogleGenerativeAIEmbeddings(
             model="models/gemini-embedding-001",
@@ -129,21 +165,21 @@ def get_vectorstore():
         )
         return vectorstore
     except Exception as e:
-        st.error(f"❌ Erro ao conectar ao vectorstore: {str(e)}")
+        st.error(f"❌ Erro ao conectar: {str(e)}")
         return None
 
 @st.cache_resource
 def get_llm():
-    """Inicializa o modelo de linguagem Gemini"""
+    """Inicializa o modelo Gemini"""
     return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash", 
+        model="gemini-2.0-flash",
         temperature=0.1,
         max_retries=1
     )
 
-# --- 5. PROCESSAMENTO DE PDF (Apenas Admin) ---
+# --- 5. PROCESSAMENTO DE PDF (APENAS ADMIN) ---
 def process_pdf_otimizado(uploaded_file):
-    """Processamento otimizado de PDFs"""
+    """Processa PDF e indexa no Pinecone"""
     tmp_file_path = None
     try:
         if uploaded_file is None:
@@ -158,8 +194,9 @@ def process_pdf_otimizado(uploaded_file):
         
         vectorstore = get_vectorstore()
         if vectorstore is None:
-            return False, "❌ Não foi possível conectar ao banco de dados."
+            return False, "❌ Banco de dados indisponível."
         
+        # Verificar duplicidade
         try:
             existing = vectorstore.similarity_search(
                 "dummy query",
@@ -167,14 +204,16 @@ def process_pdf_otimizado(uploaded_file):
                 filter={"file_hash": {"$eq": file_hash}}
             )
             if existing:
-                return False, "⚠️ Documento já processado anteriormente."
-        except Exception as e:
-            st.warning(f"⚠️ Não foi possível verificar duplicidade: {str(e)}")
+                return False, "⚠️ Documento já existe na base."
+        except:
+            pass
         
+        # Salvar temporariamente
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(file_content)
             tmp_file_path = tmp_file.name
         
+        # Carregar PDF
         try:
             loader = PyPDFLoader(tmp_file_path)
             docs = loader.load()
@@ -182,8 +221,9 @@ def process_pdf_otimizado(uploaded_file):
             return False, f"❌ Erro ao ler PDF: {str(e)}"
         
         if not docs:
-            return False, "❌ PDF vazio ou sem texto extraível."
+            return False, "❌ PDF sem conteúdo extraível."
         
+        # Dividir em chunks
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
             chunk_overlap=200,
@@ -192,6 +232,7 @@ def process_pdf_otimizado(uploaded_file):
         )
         splits = text_splitter.split_documents(docs)
         
+        # Preparar documentos
         documentos_para_adicionar = []
         for i, split in enumerate(splits):
             chunk_id = str(uuid.uuid4())
@@ -207,33 +248,33 @@ def process_pdf_otimizado(uploaded_file):
                 documentos_para_adicionar.append(split)
         
         if not documentos_para_adicionar:
-            return False, "❌ Nenhum conteúdo válido extraído do PDF."
+            return False, "❌ Nenhum conteúdo válido extraído."
         
+        # Upload em lotes
         total = len(documentos_para_adicionar)
-        progress_bar = st.progress(0, text="Enviando para o Pinecone...")
+        progress_bar = st.progress(0, text="Indexando no banco de dados...")
         
         batch_size = 10
         for i in range(0, total, batch_size):
             batch = documentos_para_adicionar[i:i + batch_size]
-            max_retries = 3
-            for attempt in range(max_retries):
+            for attempt in range(3):
                 try:
                     vectorstore.add_documents(batch)
                     break
                 except Exception as e:
-                    if attempt < max_retries - 1:
+                    if attempt < 2:
                         time.sleep(2 ** attempt)
                     else:
                         raise e
             progress = min((i + batch_size) / total, 1.0)
-            progress_bar.progress(progress, text=f"Enviando... {int(progress * 100)}%")
+            progress_bar.progress(progress, text=f"Processando... {int(progress * 100)}%")
         
         progress_bar.empty()
         
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.remove(tmp_file_path)
             
-        return True, f"✅ Sucesso! {total} partes indexadas no Pinecone."
+        return True, f"✅ Sucesso! {total} trechos indexados."
         
     except Exception as e:
         if tmp_file_path and os.path.exists(tmp_file_path):
@@ -241,236 +282,257 @@ def process_pdf_otimizado(uploaded_file):
                 os.remove(tmp_file_path)
             except:
                 pass
-        return False, f"❌ Erro durante o processamento: {str(e)}"
+        return False, f"❌ Erro: {str(e)}"
 
-# --- 6. SISTEMA DE PROMPTS DIFERENCIADOS ---
+# --- 6. SISTEMA DE PROMPTS POR PERFIL ---
 def get_system_prompt(perfil):
-    """Retorna o prompt adequado baseado no perfil do usuário"""
+    """
+    Retorna o prompt adequado baseado no perfil do usuário
+    Integrado com os níveis do PHP:
+    - admin: Acesso total
+    - funcionario: Técnico com referências
+    - cidadao: Simples e casual
+    """
     
-    if perfil == "admin":
-        return (
-            "Você é um assistente jurídico especializado da Auditoria Municipal, "
-            "respondendo a um ADMINISTRADOR DO SISTEMA com acesso total.\n"
-            "Forneça respostas TÉCNICAS, PRECISAS e DETALHADAS.\n"
-            "Sempre cite a LEI, DECRETO, ARTIGO e PARÁGRAFO exato de onde a informação foi extraída.\n"
-            "Formato de resposta:\n"
-            "1. Resposta técnica completa\n"
-            "2. Fundamentação legal detalhada (Lei nº X/Ano, Art. Y, §Z)\n"
-            "3. Trecho exato do documento consultado\n"
+    prompts = {
+        "admin": (
+            "Você é um ASSISTENTE JURÍDICO ESPECIALIZADO da Auditoria Municipal.\n"
+            "Respondendo a um ADMINISTRADOR com acesso TOTAL ao sistema.\n\n"
+            "REGRAS DE RESPOSTA:\n"
+            "1. Seja TÉCNICO, PRECISO e DETALHADO\n"
+            "2. Sempre cite a LEI, DECRETO, ARTIGO, PARÁGRAFO e INCISO exato\n"
+            "3. Inclua o TRECHO LITERAL do documento quando relevante\n"
+            "4. Formate a resposta com:\n"
+            "   - Resposta técnica completa\n"
+            "   - Fundamentação legal detalhada\n"
+            "   - Trecho exato do documento\n"
+            "5. Se não encontrar nos documentos, informe exatamente quais fontes faltam\n\n"
+            "Contexto recuperado dos documentos oficiais:\n{context}"
+        ),
+        
+        "funcionario": (
+            "Você é um ASSISTENTE TÉCNICO da Prefeitura Municipal.\n"
+            "Respondendo a um SERVIDOR PÚBLICO autorizado.\n\n"
+            "REGRAS DE RESPOSTA:\n"
+            "1. Seja PRECISO e FUNDAMENTADO\n"
+            "2. Indique a LEI, DECRETO e ARTIGO correspondente\n"
+            "3. Destaque os pontos principais da legislação\n"
+            "4. Se não encontrar, oriente onde buscar a informação\n\n"
+            "Contexto recuperado dos documentos oficiais:\n{context}"
+        ),
+        
+        "cidadao": (
+            "Você é um ASSISTENTE VIRTUAL AMIGÁVEL da Prefeitura Municipal.\n"
+            "Respondendo a um CIDADÃO comum.\n\n"
+            "REGRAS DE RESPOSTA:\n"
+            "1. Use linguagem SIMPLES, CLARA e ACESSÍVEL\n"
+            "2. Explique como se estivesse conversando com um amigo\n"
+            "3. NÃO mencione números de leis ou artigos técnicos\n"
+            "4. Use exemplos do dia a dia quando possível\n"
+            "5. Se a informação não estiver disponível, explique como proceder\n"
+            "6. Sempre termine com informações de contato úteis\n\n"
             "Contexto recuperado dos documentos oficiais:\n{context}"
         )
+    }
     
-    elif perfil == "servidor":
-        return (
-            "Você é um assistente técnico da Prefeitura Municipal, "
-            "respondendo a um SERVIDOR PÚBLICO autorizado.\n"
-            "Forneça respostas PRECISAS e FUNDAMENTADAS.\n"
-            "Indique a lei, decreto e artigo correspondente.\n"
-            "Contexto recuperado dos documentos oficiais:\n{context}"
-        )
-    
-    else:  # cidadão
-        return (
-            "Você é um assistente virtual amigável da Prefeitura Municipal, "
-            "respondendo a um CIDADÃO.\n"
-            "Use uma linguagem SIMPLES, CLARA e ACESSÍVEL.\n"
-            "Explique de forma casual e educativa, como se estivesse conversando.\n"
-            "Não mencione números de lei ou artigos, apenas explique o conceito.\n"
-            "Se a informação não estiver disponível, oriente onde o cidadão pode buscar ajuda.\n"
-            "Contexto recuperado dos documentos oficiais:\n{context}"
-        )
+    return prompts.get(perfil, prompts["cidadao"])
 
-def formatar_resposta_cidadao(resposta_tecnica, source_docs):
+def formatar_resposta_cidadao(resposta_tecnica):
     """Adapta resposta técnica para linguagem cidadã"""
     
-    # Remove termos muito técnicos
-    termos_tecnicos = {
-        "in verbis": "conforme",
+    # Dicionário de termos técnicos → linguagem simples
+    termos = {
+        "in verbis": "conforme está escrito",
         "data venia": "com o devido respeito",
         "a priori": "em princípio",
         "a posteriori": "depois",
         "ad referendum": "para aprovação",
-        "caput": "parte principal",
+        "caput": "parte principal do artigo",
         "parágrafo único": "parte única",
         "inciso": "item",
         "alínea": "subitem",
+        "ementa": "resumo",
+        "jurisprudência": "decisões anteriores da justiça",
+        "trânsito em julgado": "decisão final, sem possibilidade de recurso",
+        "ex officio": "por obrigação do cargo",
+        "pro labore": "pelo trabalho",
+        "ad hoc": "para este fim específico",
+        "sine die": "sem data definida",
+        "sub judice": "sob julgamento",
+        " erga omnes": "vale para todos",
     }
     
     resposta_simples = resposta_tecnica
-    for termo, substituto in termos_tecnicos.items():
+    for termo, substituto in termos.items():
         resposta_simples = resposta_simples.replace(termo, substituto)
     
-    # Adiciona tom mais casual
+    # Introduções amigáveis
     introducoes = [
-        "Então, vou te explicar de um jeito simples: ",
+        "Vou te explicar de um jeito bem simples: ",
         "Olha só, é o seguinte: ",
-        "Deixa eu te contar: ",
+        "Deixa eu te contar como funciona: ",
+        "É mais simples do que parece: ",
+        "Vamos por partes, de forma bem clara: ",
     ]
     
-    import random
-    resposta_final = random.choice(introducoes) + resposta_simples
+    resposta_final = random.choice(introducoes) + "\n\n" + resposta_simples
     
-    # Adiciona informação de ajuda
+    # Adiciona canais de ajuda
     resposta_final += (
-        "\n\n📞 Se precisar de mais ajuda, você pode:"
-        "\n• Ligar para o telefone da Prefeitura: (XX) XXXX-XXXX"
-        "\n• Ir pessoalmente ao setor de atendimento ao cidadão"
-        "\n• Acessar o site: www.macspc.com.br"
+        "\n\n---"
+        "\n📞 **Canais de Atendimento:**"
+        "\n• Telefone: (XX) XXXX-XXXX"
+        "\n• Email: contato@macspc.com.br"
+        "\n• Site: www.macspc.com.br"
+        "\n• Presencial: Rua X, 123 - Centro"
+        "\n• Horário: Seg-Sex, 8h às 17h"
     )
     
     return resposta_final
 
 def extrair_referencias(source_docs):
-    """Extrai referências legais dos documentos fonte"""
-    referencias = []
+    """Extrai referências legais dos documentos"""
+    referencias = set()
     
-    import re
+    padroes = [
+        r'(Lei|Decreto|Portaria|Resolução|Instrução Normativa|Medida Provisória|Emenda Constitucional)\s*(?:Federal|Estadual|Municipal)?\s*(?:n[º°]\.?\s*)?(\d+[./]?\d*)\s*(?:de\s*)?(?:(\d{1,2})\s*de\s*(\w+)\s*de\s*(\d{4}))?',
+        r'[Aa]rt(?:igo)?\.?\s*(\d+[°º]?)\s*(?:[,.]?\s*(§\s*\d+|parágrafo\s+(?:único|\d+)))?',
+        r'[Ii]nciso\s+([IVXLC]+|[a-z])',
+        r'[Aa]línea\s+([a-z])',
+    ]
+    
     for doc in source_docs:
-        # Busca padrões de lei/decreto/artigo
-        padrao_lei = r'(Lei|Decreto|Portaria|Resolução|Instrução Normativa)\s+(?:Federal|Estadual|Municipal)?\s*(?:n[º°]\.?\s*)?(\d+[./]?\d*)\s*(?:de\s*)?(?:(\d{1,2})\s*de\s*(\w+)\s*de\s*(\d{4}))?'
-        padrao_artigo = r'[Aa]rt(?:igo)?\.?\s*(\d+[°º]?)\s*(?:[,.]?\s*(§\s*\d+|parágrafo\s+(?:único|\d+)))?'
-        
-        leis_encontradas = re.findall(padrao_lei, doc.page_content)
-        artigos_encontrados = re.findall(padrao_artigo, doc.page_content)
-        
-        for lei in leis_encontradas:
-            referencias.append(f"{lei[0]} nº {lei[1]}")
-        
-        for art in artigos_encontrados:
-            referencias.append(f"Art. {art[0]} {art[1] if art[1] else ''}")
+        for padrao in padroes:
+            encontrados = re.findall(padrao, doc.page_content, re.IGNORECASE)
+            for encontrado in encontrados:
+                if isinstance(encontrado, tuple):
+                    referencias.add(" ".join(filter(None, encontrados)))
+                else:
+                    referencias.add(encontrado)
     
-    return list(set(referencias))  # Remove duplicatas
+    return list(referencias)[:10]  # Limita a 10 referências
 
-# --- 7. INTERFACE DO USUÁRIO ---
+# --- 7. INTERFACE PRINCIPAL ---
 def main():
-    # Verificar autenticação
-    autenticado, perfil = verificar_autenticacao()
+    # Detectar modo e se está embedado
+    perfil_info, is_embed = detectar_modo()
+    modo = perfil_info["nivel"]
     
+    # Inicializar Pinecone
     pc = init_pinecone()
     if pc is None:
-        st.error("❌ Não foi possível inicializar o Pinecone. Verifique suas credenciais.")
-        st.info("💡 Dica: Entre em contato com o suporte técnico pelo telefone (XX) XXXX-XXXX")
+        st.error("❌ Sistema temporariamente indisponível.")
+        if modo == "cidadao":
+            st.info("📞 Por favor, tente novamente mais tarde ou entre em contato pelo telefone (XX) XXXX-XXXX.")
         return
     
-    # Sidebar
+    # --- SIDEBAR (ADAPTATIVA POR PERFIL) ---
     with st.sidebar:
-        st.title("🏛️ Painel de Controle")
+        st.title(f"{perfil_info['icone']} Painel")
         
-        if perfil == "admin":
+        if modo == "admin":
             st.success("🔒 MODO ADMINISTRADOR")
-            st.info("Acesso total às funcionalidades do sistema")
+            st.caption("Acesso total ao sistema")
             
             st.markdown("---")
             st.subheader("📤 Upload de Documentos")
             
             uploaded_file = st.file_uploader(
-                "Selecione o PDF para processar", 
+                "Selecionar PDF:",
                 type="pdf",
-                help="Apenas arquivos PDF com texto extraível"
+                help="Apenas PDFs com texto extraível"
             )
             
             if uploaded_file and st.button("🚀 Processar Documento", use_container_width=True):
-                with st.spinner("Processando documento..."):
+                with st.spinner("Processando..."):
                     sucesso, msg = process_pdf_otimizado(uploaded_file)
                     if sucesso:
                         st.success(msg)
                         st.balloons()
+                        # Limpar cache para forçar reindexação
+                        st.cache_resource.clear()
                     else:
                         st.error(msg)
             
             st.markdown("---")
-            st.subheader("📊 Estatísticas do Sistema")
+            st.subheader("📊 Estatísticas")
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Status", "Conectado ✅" if pc else "Desconectado ❌")
+                st.metric("Status", "Conectado ✅")
             with col2:
                 st.metric("Índice", INDEX_NAME)
             
-            # Botão de logout
-            if st.button("🔓 Sair do Modo Admin", use_container_width=True):
-                st.query_params.clear()
-                st.rerun()
-        
-        elif perfil == "servidor":
+        elif modo == "funcionario":
             st.info("🔐 MODO SERVIDOR")
-            st.success("Acesso autorizado à base documental")
-            
+            st.caption("Acesso técnico autorizado")
             st.markdown("---")
-            st.subheader("📚 Acesso à Legislação")
             st.markdown("""
-            ✅ Consulta completa
-            ✅ Referências legais
-            ✅ Artigos e parágrafos
+            **Recursos Disponíveis:**
+            - ✅ Consulta à legislação
+            - ✅ Referências legais
+            - ✅ Artigos e parágrafos
+            - ✅ Documentos oficiais
             """)
             
-            if st.button("🔓 Sair", use_container_width=True):
-                st.query_params.clear()
-                st.rerun()
-        
-        else:
-            st.info("👤 MODO CIDADÃO")
+        else:  # cidadao
+            st.info("👤 PORTAL DO CIDADÃO")
             st.markdown("---")
             st.subheader("📱 Canais de Atendimento")
             st.markdown("""
-            📞 **Telefone:** (12) 9999-9999  
-            📧 **Email:** contato@macspc.com.br  
-            🌐 **Site:** www.macspc.com.br  
-            🏢 **Presencial:** Rua X, 123 - Centro  
+            📞 **(XX) XXXX-XXXX**
+            📧 **contato@macspc.com.br**
+            🌐 **www.macspc.com.br**
+            🏢 **Rua X, 123 - Centro**
             
-            ⏰ **Horário:** Seg-Sex, 8h às 17h
+            ⏰ Seg-Sex, 8h às 17h
             """)
             
-            # Opção de login
             st.markdown("---")
-            st.markdown("### 🔐 Área Restrita")
-            st.markdown("Para servidores e administradores:")
-            
-            codigo_acesso = st.text_input(
-                "Código de acesso:", 
-                type="password",
-                placeholder="Digite seu código"
-            )
-            
-            if st.button("Entrar", use_container_width=True):
-                if codigo_acesso in st.secrets.get("TOKENS_AUTORIZADOS", "").split(","):
-                    st.query_params["mode"] = "servidor"
-                    st.query_params["token"] = codigo_acesso
-                    st.rerun()
-                else:
-                    st.error("❌ Código inválido")
+            st.subheader("🔐 Área do Servidor")
+            st.caption("Acesso exclusivo para funcionários")
+            st.markdown("*Faça login no portal para acesso técnico*")
     
-    # Área principal
-    if perfil == "admin":
-        st.title("🤖 Assistente Técnico - Modo Administrador")
-        st.caption("Consultas detalhadas com referências legais completas")
-    elif perfil == "servidor":
-        st.title("🤖 Assistente Técnico - Modo Servidor")
-        st.caption("Consultas fundamentadas na legislação municipal")
-    else:
-        st.title("💬 Assistente Virtual da Prefeitura")
-        st.caption("Tire suas dúvidas sobre serviços e documentos municipais de forma simples!")
+    # --- ÁREA PRINCIPAL ---
+    # Título adaptativo
+    titulos = {
+        "admin": "🤖 Assistente Técnico - Administração",
+        "funcionario": "🤖 Assistente Técnico - Servidor",
+        "cidadao": "💬 Assistente Virtual da Prefeitura"
+    }
     
-    # Histórico de Chat
+    subtitulos = {
+        "admin": "Consultas detalhadas com referências legais completas e upload de documentos",
+        "funcionario": "Consultas fundamentadas na legislação municipal vigente",
+        "cidadao": "Tire suas dúvidas de forma simples e rápida!"
+    }
+    
+    st.title(titulos.get(modo, titulos["cidadao"]))
+    st.caption(subtitulos.get(modo, subtitulos["cidadao"]))
+    
+    # --- HISTÓRICO DE CHAT ---
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
+    # Mostrar histórico
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
-    # Input do usuário
-    placeholder_text = {
+    # --- INPUT DO USUÁRIO ---
+    placeholders = {
         "admin": "Digite sua consulta técnica detalhada...",
-        "servidor": "Pergunte sobre leis, decretos e procedimentos...",
-        "cidadao": "Como posso ajudar? Pergunte sobre seus direitos, serviços, documentos..."
+        "funcionario": "Pergunte sobre leis, decretos e procedimentos...",
+        "cidadao": "Como posso ajudar? Pergunte sobre seus direitos e serviços..."
     }
     
-    if prompt := st.chat_input(placeholder_text.get(perfil, "Digite sua dúvida...")):
-        # Adiciona pergunta ao histórico
+    if prompt := st.chat_input(placeholders.get(modo, "Digite sua dúvida...")):
+        # Adicionar pergunta ao histórico
         st.session_state.messages.append({"role": "user", "content": prompt})
+        
         with st.chat_message("user"):
             st.markdown(prompt)
         
+        # Gerar resposta
         with st.chat_message("assistant"):
             with st.spinner("🔍 Consultando documentos oficiais..."):
                 try:
@@ -478,103 +540,104 @@ def main():
                     llm = get_llm()
                     
                     if vectorstore and llm:
-                        # Configurar o Retriever do Pinecone
+                        # Configurar retriever
+                        k_docs = 3 if modo == "cidadao" else 8  # Mais docs para técnicos
+                        
                         retriever = vectorstore.as_retriever(
                             search_type="similarity",
                             search_kwargs={
-                                "k": 5 if perfil == "cidadao" else 10,  # Mais documentos para usuários logados
+                                "k": k_docs,
                                 "filter": {"doc_type": "PDF"}
                             }
                         )
                         
-                        # Criar o Prompt baseado no perfil
-                        system_prompt = get_system_prompt(perfil)
+                        # Criar prompt específico
+                        system_prompt = get_system_prompt(modo)
                         
                         prompt_template = ChatPromptTemplate.from_messages([
                             ("system", system_prompt),
                             ("human", "{input}")
                         ])
                         
-                        # Montar a Cadeia RAG
+                        # Criar cadeia RAG
                         question_answer_chain = create_stuff_documents_chain(llm, prompt_template)
                         rag_chain = create_retrieval_chain(retriever, question_answer_chain)
                         
-                        # Executar a consulta
+                        # Executar consulta
                         response = rag_chain.invoke({"input": prompt})
                         
                         answer = response["answer"]
                         source_docs = response["context"]
                         
-                        # Formatar resposta baseado no perfil
-                        if perfil == "cidadao":
-                            # Simplifica para cidadão
-                            answer = formatar_resposta_cidadao(answer, source_docs)
+                        # --- FORMATAR RESPOSTA POR PERFIL ---
+                        if modo == "cidadao":
+                            # Resposta simplificada
+                            answer = formatar_resposta_cidadao(answer)
                             st.markdown(answer)
                             
-                            # Apenas indica que tem fontes, sem detalhes técnicos
                             if source_docs:
                                 st.markdown("---")
-                                st.info("💡 Esta resposta foi baseada em documentos oficiais da Prefeitura Municipal.")
+                                st.info("💡 Resposta baseada em documentos oficiais da Prefeitura Municipal.")
                         
-                        elif perfil == "servidor":
-                            # Resposta técnica com referências
-                            st.markdown("### 📋 Resposta Técnica:")
+                        elif modo == "funcionario":
+                            # Resposta técnica
+                            st.markdown("### 📋 Resposta Técnica")
                             st.markdown(answer)
                             
-                            # Mostrar referências legais
+                            # Referências legais
                             referencias = extrair_referencias(source_docs)
                             if referencias:
                                 st.markdown("---")
-                                st.markdown("### ⚖️ Fundamentação Legal:")
-                                for ref in referencias[:5]:  # Limita a 5 referências
+                                st.markdown("### ⚖️ Fundamentação Legal")
+                                for ref in referencias[:5]:
                                     st.markdown(f"📌 {ref}")
                             
-                            # Mostrar fontes
+                            # Fontes resumidas
                             if source_docs:
                                 st.markdown("---")
-                                st.markdown("### 📚 Documentos Consultados:")
+                                st.markdown("### 📚 Documentos Consultados")
                                 for i, doc in enumerate(source_docs[:3]):
-                                    with st.expander(f"📄 Fonte {i+1} - {doc.metadata.get('source', 'Documento')}"):
-                                        st.text(doc.page_content[:300] + "...")
+                                    with st.expander(f"📄 {doc.metadata.get('source', 'Documento')} - Trecho {i+1}"):
+                                        st.text(doc.page_content[:400] + "...")
                         
                         else:  # admin
-                            # Resposta completa com tudo
-                            st.markdown("### 📋 Análise Técnica Completa:")
+                            # Resposta completa
+                            st.markdown("### 📋 Análise Técnica Completa")
                             st.markdown(answer)
                             
-                            # Referências detalhadas
+                            # Todas as referências
                             referencias = extrair_referencias(source_docs)
                             if referencias:
                                 st.markdown("---")
-                                st.markdown("### ⚖️ Referências Legais:")
+                                st.markdown("### ⚖️ Referências Legais Completas")
                                 for ref in referencias:
                                     st.markdown(f"📌 {ref}")
                             
                             # Fontes completas
                             if source_docs:
                                 st.markdown("---")
-                                st.markdown("### 📚 Fontes Documentais:")
+                                st.markdown("### 📚 Fontes Documentais")
                                 for i, doc in enumerate(source_docs):
-                                    with st.expander(f"📄 Documento {i+1} - {doc.metadata.get('source', 'Desconhecido')}"):
+                                    with st.expander(f"📄 {doc.metadata.get('source', 'Desconhecido')} (Chunk {doc.metadata.get('chunk_index', '?')}/{doc.metadata.get('total_chunks', '?')})"):
                                         st.text(doc.page_content)
-                                        st.caption(f"Chunk: {doc.metadata.get('chunk_index')}/{doc.metadata.get('total_chunks')}")
                         
-                        # Salva no histórico
+                        # Salvar no histórico
                         st.session_state.messages.append({
-                            "role": "assistant", 
+                            "role": "assistant",
                             "content": answer
                         })
+                        
                     else:
-                        st.error("❌ Erro interno: Sistema temporariamente indisponível.")
-                        if perfil == "cidadao":
-                            st.info("Por favor, tente novamente mais tarde ou entre em contato pelo telefone (XX) XXXX-XXXX.")
+                        st.error("❌ Sistema temporariamente indisponível.")
+                        if modo == "cidadao":
+                            st.info("📞 Entre em contato pelo telefone (XX) XXXX-XXXX.")
                         
                 except Exception as e:
-                    if perfil == "admin" or perfil == "servidor":
+                    if modo in ["admin", "funcionario"]:
                         st.error(f"❌ Erro técnico: {str(e)}")
                     else:
-                        st.error("❌ Desculpe, ocorreu um erro. Por favor, tente novamente ou entre em contato com a Prefeitura.")
-                        st.info("📞 Telefone: (12) 99999-9999")
+                        st.error("❌ Desculpe, ocorreu um erro. Por favor, tente novamente.")
+                        st.info("📞 Se o problema persistir, ligue para (XX) XXXX-XXXX.")
 
 if __name__ == "__main__":
     main()
