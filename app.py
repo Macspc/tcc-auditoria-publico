@@ -15,9 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pinecone import Pinecone, ServerlessSpec
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="IA Auditoria Municipal - Consulta Avançada", 
-                   layout="wide", 
-                   page_icon="🏛️")
+st.set_page_config(page_title="IA Auditoria Municipal - Consulta Avançada", layout="wide", page_icon="🏛️")
 
 st.markdown("""
     <style>
@@ -83,6 +81,8 @@ def get_vectorstore():
             model="models/gemini-embedding-001",
             task_type="retrieval_query"  # Otimizado para consulta
         )
+        
+             
         
         vectorstore = PineconeVectorStore(
             index_name=INDEX_NAME,
@@ -213,18 +213,10 @@ def main():
         st.error("❌ Não foi possível inicializar o Pinecone. Verifique suas credenciais.")
         return
     
-    # ==========================
-    # LOGIN VIA PHP (IFRAME)
-    # ==========================
-    params = st.query_params
-    logado = params.get("logado", "false").lower() == "true"
-    nivel = params.get("nivel", "cidadao").lower()
-
-    modo = nivel if logado else "cidadao"
-
-    # ==========================
-    # SIDEBAR
-    # ==========================
+    query_params = st.query_params
+    modo = query_params.get("mode", "cidadao")
+    
+    # Sidebar
     with st.sidebar:
         st.title("🏛️ Painel de Controle")
         
@@ -280,23 +272,14 @@ def main():
                         )
                         
                         # 2. Criar o Prompt que OBRIGA a IA a usar o Pinecone
-                        if modo == "cidadao":
-                            system_prompt = (
-                                "Você é um assistente virtual da Prefeitura que ajuda cidadãos comuns. "
-                                "Responda de forma simples, clara e didática, evitando linguagem técnica. "
-                                "Baseie-se EXCLUSIVAMENTE nos documentos fornecidos.\n\n"
-                                "REGRAS:\n"
-                                "- Explique como se estivesse falando com alguém leigo\n"
-                                "- NÃO citar artigo ou número de lei, a menos que seja extremamente necessário\n"
-                                "- Use linguagem acessível\n"
-                                "- Se não houver resposta nos documentos, diga exatamente:\n"
-                                "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
-                                "Contexto:\n{context}"
-                            )
-                        else:  # admin ou funcionario
+                        
+                        
+                        
+                        if modo == "admin":
                             system_prompt = (
                                 "Você é um assistente técnico da Auditoria Municipal. "
                                 "Responda de forma objetiva, precisa e técnica.\n\n"
+        
                                 "REGRAS:\n"
                                 "- Baseie-se EXCLUSIVAMENTE nos documentos fornecidos\n"
                                 "- Sempre que possível, cite explicitamente:\n"
@@ -306,8 +289,18 @@ def main():
                                 "- NÃO invente informações\n"
                                 "- Se não houver resposta nos documentos, diga exatamente:\n"
                                 "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
+        
                                 "Contexto:\n{context}"
-                            )
+                                )
+                        else:
+                            system_prompt = (
+                                "Você é um assistente virtual da Auditoria Municipal. "
+                                "Sua função é responder às perguntas baseando-se EXCLUSIVAMENTE nos documentos de contexto fornecidos abaixo. "
+                                "Se a resposta não estiver nos documentos fornecidos, responda exatamente: "
+                                "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.' "
+                                "Não invente informações ou use seu conhecimento prévio.\n\n"
+                                "Contexto recuperado dos documentos:\n{context}"
+                                )
                         
                         prompt_template = ChatPromptTemplate.from_messages([
                             ("system", system_prompt),
@@ -327,7 +320,18 @@ def main():
                         # Exibe a resposta formulada pela IA
                         st.markdown(answer)
                         
-
+                        # Exibe as fontes de onde ela tirou a informação
+                        if source_docs:
+                            st.markdown("---")
+                            st.markdown("📚 **Trechos Consultados:**")
+                            for i, doc in enumerate(source_docs):
+                                fonte = doc.metadata.get('source', 'Fonte desconhecida')
+                                with st.expander(f"📄 Fonte {i+1} - {fonte}"):
+                                    st.markdown(f"*{doc.page_content}*")
+                        else:
+                            st.warning("⚠️ Nenhum documento PDF relevante foi encontrado no banco de dados para esta consulta.")
+                        
+                        # Salva no histórico
                         st.session_state.messages.append({"role": "assistant", "content": answer})
                     else:
                         st.error("Erro interno: Falha ao carregar banco de dados vetorial ou modelo LLM.")
@@ -337,3 +341,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
