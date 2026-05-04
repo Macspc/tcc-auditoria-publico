@@ -84,8 +84,6 @@ def get_vectorstore():
             task_type="retrieval_query"  # Otimizado para consulta
         )
         
-             
-        
         vectorstore = PineconeVectorStore(
             index_name=INDEX_NAME,
             embedding=embeddings,
@@ -214,6 +212,7 @@ def main():
     if pc is None:
         st.error("❌ Não foi possível inicializar o Pinecone. Verifique suas credenciais.")
         return
+    
     # ==========================
     # LOGIN VIA PHP (IFRAME)
     # ==========================
@@ -225,6 +224,7 @@ def main():
 
     # ==========================
     # SIDEBAR
+    # ==========================
     with st.sidebar:
         st.title("🏛️ Painel de Controle")
         
@@ -280,39 +280,34 @@ def main():
                         )
                         
                         # 2. Criar o Prompt que OBRIGA a IA a usar o Pinecone
-                  if modo == "cidadao":
-                     system_prompt = (
-                          "Você é um assistente virtual da Prefeitura que ajuda cidadãos comuns. "
-                          "Responda de forma simples, clara e didática, evitando linguagem técnica. "
-                          "Baseie-se EXCLUSIVAMENTE nos documentos fornecidos.\n\n"
-        
-                          "REGRAS:\n"
-                          "- Explique como se estivesse falando com alguém leigo\n"
-                          "- NÃO citar artigo ou número de lei, a menos que seja extremamente necessário\n"
-                          "- Use linguagem acessível\n"
-                          "- Se não houver resposta nos documentos, diga exatamente:\n"
-                          "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
-                          
-                          "Contexto:\n{context}"
-                          )
-
-                else:  # admin ou funcionario
-                    system_prompt = (
-                        "Você é um assistente técnico da Auditoria Municipal. "
-                        "Responda de forma objetiva, precisa e técnica.\n\n"
-                        
-                        "REGRAS:\n"
-                        "- Baseie-se EXCLUSIVAMENTE nos documentos fornecidos\n"
-                        "- Sempre que possível, cite explicitamente:\n"
-                        "  • Nome da lei/decreto\n"
-                        "  • Número do artigo\n"
-                        "- Seja direto e sucinto\n"
-                        "- NÃO invente informações\n"
-                        "- Se não houver resposta nos documentos, diga exatamente:\n"
-                        "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
-                        
-                        "Contexto:\n{context}"
-                         )
+                        if modo == "cidadao":
+                            system_prompt = (
+                                "Você é um assistente virtual da Prefeitura que ajuda cidadãos comuns. "
+                                "Responda de forma simples, clara e didática, evitando linguagem técnica. "
+                                "Baseie-se EXCLUSIVAMENTE nos documentos fornecidos.\n\n"
+                                "REGRAS:\n"
+                                "- Explique como se estivesse falando com alguém leigo\n"
+                                "- NÃO citar artigo ou número de lei, a menos que seja extremamente necessário\n"
+                                "- Use linguagem acessível\n"
+                                "- Se não houver resposta nos documentos, diga exatamente:\n"
+                                "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
+                                "Contexto:\n{context}"
+                            )
+                        else:  # admin ou funcionario
+                            system_prompt = (
+                                "Você é um assistente técnico da Auditoria Municipal. "
+                                "Responda de forma objetiva, precisa e técnica.\n\n"
+                                "REGRAS:\n"
+                                "- Baseie-se EXCLUSIVAMENTE nos documentos fornecidos\n"
+                                "- Sempre que possível, cite explicitamente:\n"
+                                "  • Nome da lei/decreto\n"
+                                "  • Número do artigo\n"
+                                "- Seja direto e sucinto\n"
+                                "- NÃO invente informações\n"
+                                "- Se não houver resposta nos documentos, diga exatamente:\n"
+                                "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
+                                "Contexto:\n{context}"
+                            )
                         
                         prompt_template = ChatPromptTemplate.from_messages([
                             ("system", system_prompt),
