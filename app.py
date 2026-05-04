@@ -214,29 +214,17 @@ def main():
     if pc is None:
         st.error("❌ Não foi possível inicializar o Pinecone. Verifique suas credenciais.")
         return
-    
+    # ==========================
+    # LOGIN VIA PHP (IFRAME)
+    # ==========================
+    params = st.query_params
+    logado = params.get("logado", "false").lower() == "true"
+    nivel = params.get("nivel", "cidadao").lower()
 
-    
+    modo = nivel if logado else "cidadao"
 
-query_params = st.query_params
-
-# Recebe do PHP via iframe algo como:
-# ?logado=true&nivel=admin
-logado = query_params.get("logado", "false").lower() == "true"
-nivel = query_params.get("nivel", "cidadao").lower()
-
-if not logado:
-    modo = "cidadao"
-else:
-    modo = nivel  # admin ou funcionario
-
-
-
-
-
-
-
-    # Sidebar
+    # ==========================
+    # SIDEBAR
     with st.sidebar:
         st.title("🏛️ Painel de Controle")
         
@@ -292,39 +280,39 @@ else:
                         )
                         
                         # 2. Criar o Prompt que OBRIGA a IA a usar o Pinecone
-    if modo == "cidadao":
-    system_prompt = (
-        "Você é um assistente virtual da Prefeitura que ajuda cidadãos comuns. "
-        "Responda de forma simples, clara e didática, evitando linguagem técnica. "
-        "Baseie-se EXCLUSIVAMENTE nos documentos fornecidos.\n\n"
+                  if modo == "cidadao":
+                     system_prompt = (
+                          "Você é um assistente virtual da Prefeitura que ajuda cidadãos comuns. "
+                          "Responda de forma simples, clara e didática, evitando linguagem técnica. "
+                          "Baseie-se EXCLUSIVAMENTE nos documentos fornecidos.\n\n"
         
-        "REGRAS:\n"
-        "- Explique como se estivesse falando com alguém leigo\n"
-        "- NÃO citar artigo ou número de lei, a menos que seja extremamente necessário\n"
-        "- Use linguagem acessível\n"
-        "- Se não houver resposta nos documentos, diga exatamente:\n"
-        "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
-        
-        "Contexto:\n{context}"
-    )
+                          "REGRAS:\n"
+                          "- Explique como se estivesse falando com alguém leigo\n"
+                          "- NÃO citar artigo ou número de lei, a menos que seja extremamente necessário\n"
+                          "- Use linguagem acessível\n"
+                          "- Se não houver resposta nos documentos, diga exatamente:\n"
+                          "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
+                          
+                          "Contexto:\n{context}"
+                          )
 
-    else:  # admin ou funcionario
-    system_prompt = (
-        "Você é um assistente técnico da Auditoria Municipal. "
-        "Responda de forma objetiva, precisa e técnica.\n\n"
-        
-        "REGRAS:\n"
-        "- Baseie-se EXCLUSIVAMENTE nos documentos fornecidos\n"
-        "- Sempre que possível, cite explicitamente:\n"
-        "  • Nome da lei/decreto\n"
-        "  • Número do artigo\n"
-        "- Seja direto e sucinto\n"
-        "- NÃO invente informações\n"
-        "- Se não houver resposta nos documentos, diga exatamente:\n"
-        "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
-        
-        "Contexto:\n{context}"
-    )
+                else:  # admin ou funcionario
+                    system_prompt = (
+                        "Você é um assistente técnico da Auditoria Municipal. "
+                        "Responda de forma objetiva, precisa e técnica.\n\n"
+                        
+                        "REGRAS:\n"
+                        "- Baseie-se EXCLUSIVAMENTE nos documentos fornecidos\n"
+                        "- Sempre que possível, cite explicitamente:\n"
+                        "  • Nome da lei/decreto\n"
+                        "  • Número do artigo\n"
+                        "- Seja direto e sucinto\n"
+                        "- NÃO invente informações\n"
+                        "- Se não houver resposta nos documentos, diga exatamente:\n"
+                        "'Desculpe, não encontrei informações sobre isso nos documentos oficiais anexados.'\n\n"
+                        
+                        "Contexto:\n{context}"
+                         )
                         
                         prompt_template = ChatPromptTemplate.from_messages([
                             ("system", system_prompt),
