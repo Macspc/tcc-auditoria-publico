@@ -275,7 +275,7 @@ def main():
                         
                         
                         
-                        if modo == "admin":
+                        if modo == "admin" or modo == "funcionario":
                             system_prompt = (
                                 "Você é um assistente técnico da Auditoria Municipal. "
                                 "Responda de forma objetiva, precisa e técnica.\n\n"
@@ -321,15 +321,7 @@ def main():
                         st.markdown(answer)
                         
                         # Exibe as fontes de onde ela tirou a informação
-                        if source_docs:
-                            st.markdown("---")
-                            st.markdown("📚 **Trechos Consultados:**")
-                            for i, doc in enumerate(source_docs):
-                                fonte = doc.metadata.get('source', 'Fonte desconhecida')
-                                with st.expander(f"📄 Fonte {i+1} - {fonte}"):
-                                    st.markdown(f"*{doc.page_content}*")
-                        else:
-                            st.warning("⚠️ Nenhum documento PDF relevante foi encontrado no banco de dados para esta consulta.")
+                        
                         
                         # Salva no histórico
                         st.session_state.messages.append({"role": "assistant", "content": answer})
